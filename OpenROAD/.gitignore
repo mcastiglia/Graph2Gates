@@ -1,0 +1,4 @@
+# artifacts
+*.sif
+*.sif.zst
+*.sif.sha256
