@@ -1,0 +1,39 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl xz-utils dpkg tar \
+        tcl tk libtcl8.6 libreadline8 zlib1g tclreadline libgomp1 \
+        libqt5charts5 libqt5widgets5 libqt5gui5 libqt5core5a libqt5svg5 \
+        libx11-xcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+        libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libgl1 \
+        libpython3.10 python3.10-minimal
+    rm -rf /var/lib/apt/lists/*
+
+    # OR-Tools C++ runtime (v9.14, Ubuntu 22.04)
+    curl -L -o /tmp/ortools.tar.gz \
+      "https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd64_ubuntu-22.04_cpp_v9.14.6206.tar.gz"
+    mkdir -p /opt/ortools
+    tar -xzf /tmp/ortools.tar.gz -C /opt/ortools --strip-components=1
+    rm -f /tmp/ortools.tar.gz
+
+    # OpenROAD prebuilt (.deb)
+    curl -L -o /tmp/openroad.deb \
+      "https://github.com/Precision-Innovations/OpenROAD/releases/download/2024-12-14/openroad_2.0-17598-ga008522d8_amd64-ubuntu-22.04.deb"
+    mkdir -p /opt/openroad-root
+    dpkg-deb -x /tmp/openroad.deb /opt/openroad-root
+    rm -f /tmp/openroad.deb
+    ln -sf /opt/openroad-root/usr/bin/openroad /usr/local/bin/openroad
+
+%environment
+    export PATH="/usr/local/bin:${PATH}"
+    export LD_LIBRARY_PATH="/opt/ortools/lib:/opt/openroad-root/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+    export QT_QPA_PLATFORM=offscreen
+
+%runscript
+    exec openroad "$@"
