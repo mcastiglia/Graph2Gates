@@ -56,10 +56,15 @@ From: ubuntu:22.04
 %environment
     export PATH="/usr/local/bin:${PATH}"
     export PATH="/opt/oss-cad-suite/bin:${PATH}"
-    export PATH="/opt/klayout/bin:${PATH}"
+    export PATH="/opt/klayout/usr/bin:${PATH}"
     export PATH="/opt/venv/bin:${PATH}"
-    export LD_LIBRARY_PATH="/opt/ortools/lib:/opt/openroad-root/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="/opt/ortools/lib:/opt/openroad-root/usr/lib/x86_64-linux-gnu:/opt/klayout/usr/lib/klayout:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
     export QT_QPA_PLATFORM=offscreen
+    
+    # Set XDG runtime directory
+    export XDG_RUNTIME_DIR=/tmp/runtime-$(whoami)
+    mkdir -p $XDG_RUNTIME_DIR
+    chmod 700 $XDG_RUNTIME_DIR
 
     # Required setup commands for OpenROAD
     export OPENROAD_EXE=$(command -v openroad)

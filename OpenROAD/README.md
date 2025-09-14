@@ -30,6 +30,6 @@ run OpenROAD (example)
 
 This will perform the RTL-to-GDS flow for an AES core
 
-The resulting design files will be under OpenROAD/OpenROAD-flow-scripts/flow/results/nangate45/aes/base
+The resulting design files will be under `OpenROAD/OpenROAD-flow-scripts/flow/results/nangate45/aes/base`
 
-The generated reports at each step in the flow will be under OpenROAD/OpenROAD-flow-scripts/flow/reports/nangate45/aes/base
+The generated reports at each step in the flow will be under `OpenROAD/OpenROAD-flow-scripts/flow/reports/nangate45/aes/base`
