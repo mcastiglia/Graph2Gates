@@ -10,13 +10,13 @@ build the image
 
 Add git submodule for OpenROAD flow example scripts
 
+`git submodule init`
+
 `git submodule update`
 
 Checkout older version of repo, as master branch is incompatible with version of OpenROAD
 
 `cd /OpenROAD-flow-scripts/`
-
-`git checkout 659f54e2`
 
 `cd ..`
 
