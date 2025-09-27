@@ -1,12 +1,69 @@
+from preprocess import generate_prefix_adder_graph, compute_area, compute_power, generate_rca_graph, generate_kogge_stone_graph, generate_sklansky_graph, generate_brent_kung_graph, get_real_area_power, compute_delay_levels
+import random
+import gym
+import numpy as np
+from stable_baselines3 import PPO
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn.models import Graphormer
 from torch_geometric.loader import DataLoader
-from preprocess import generate_prefix_adder_graph, compute_area, compute_power, generate_rca_graph, generate_kogge_stone_graph, generate_sklansky_graph, generate_brent_kung_graph, get_real_area_power
-import random
+from torch_geometric.utils import degree, dense_to_sparse, global_mean_pool
+from torch_geometric.nn import GCNConv
+from stable_baselines3.common.policies import ActorCriticPolicy
 
-# Assume you have a dataset class that returns graphormer_input and labels
+class GraphPolicy(ActorCriticPolicy):
+    def __init__(self, observation_space, action_space, lr_schedule, net_arch=None, activation_fn=nn.Tanh, *args, **kwargs):
+        super().__init__(observation_space, action_space, lr_schedule, net_arch, activation_fn, *args, **kwargs)
+        n = 16
+        self.n = n
+        self.gnn = GCNConv(4, 64)  # input 4 features, output 64
+        self.policy_net = nn.Linear(64, action_space.n)
+        self.value_net = nn.Linear(64, 1)
+
+    def forward(self, obs):
+        # obs shape: (batch, n*4 + n*n)
+        batch_size = obs.shape[0]
+        x = obs[:, :self.n * 4].view(batch_size * self.n, 4)
+        adj_flat = obs[:, self.n * 4:].view(batch_size * self.n, self.n)
+        # For each in batch, convert to edge_index
+        embeddings = []
+        for i in range(batch_size):
+            adj = adj_flat[i * self.n:(i + 1) * self.n]
+            edge_index = dense_to_sparse(adj)[0]
+            if edge_index.numel() == 0:
+                # No edges, use zero embedding
+                emb = torch.zeros(self.n, 64, device=obs.device)
+            else:
+                emb = self.gnn(x[i * self.n:(i + 1) * self.n], edge_index)
+            graph_emb = global_mean_pool(emb, torch.zeros(self.n, dtype=torch.long, device=obs.device))
+            embeddings.append(graph_emb)
+        graph_emb = torch.stack(embeddings)
+        action_logits = self.policy_net(graph_emb)
+        value = self.value_net(graph_emb)
+        return action_logits, value
+
+class AdderEnv(gym.Env):
+    def __init__(self):
+        super(AdderEnv, self).__init__()
+        self.action_space = gym.spaces.Discrete(5)  # 5 adder types
+        self.observation_space = gym.spaces.Box(low=4, high=64, shape=(1,), dtype=np.float32)
+        self.generators = [generate_rca_graph, generate_prefix_adder_graph, generate_kogge_stone_graph, generate_sklansky_graph, generate_brent_kung_graph]
+        self.bit_width = None
+
+    def reset(self):
+        self.bit_width = random.randint(4, 64)
+        return np.array([self.bit_width], dtype=np.float32)
+
+    def step(self, action):
+        g = self.generators[action](self.bit_width)
+        area = compute_area(g)
+        power = compute_power(g)
+        reward = - (0.5 * area + 0.5 * power)  # Negative weighted sum for minimization
+        done = True  # Single-step episode
+        return np.array([self.bit_width], dtype=np.float32), reward, done, {}
+
 class CircuitGraphDataset(torch.utils.data.Dataset):
     def __init__(self, graphs, labels):
         self.data_list = []
@@ -20,44 +77,30 @@ class CircuitGraphDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.data_list[idx]
 
-# Prepare your dataset
-# Generate training data with mix of adder types
+# Supervised training of Graphormer to predict area and power
 generators = [generate_rca_graph, generate_prefix_adder_graph, generate_kogge_stone_graph, generate_sklansky_graph, generate_brent_kung_graph]
 train_graphs = []
 for _ in range(100):
     gen = random.choice(generators)
-    n = random.randint(4, 8)
+    n = 16  # Fixed for training
     g = gen(n)
     train_graphs.append(g)
 train_labels = [[compute_area(g), compute_power(g)] for g in train_graphs]
 
-eval_graphs = []
-for _ in range(20):
-    gen = random.choice(generators)
-    n = random.randint(4, 8)
-    g = gen(n)
-    eval_graphs.append(g)
-eval_labels = [[compute_area(g), compute_power(g)] for g in eval_graphs]
-
 train_dataset = CircuitGraphDataset(train_graphs, train_labels)
-eval_dataset = CircuitGraphDataset(eval_graphs, eval_labels)
 
-# Load model for regression
 embed_dim = 768
 model = Graphormer(num_node_types=None, num_edge_types=1, num_classes=None, embed_dim=embed_dim)
 predictor = torch.nn.Linear(embed_dim, 2)
 
-# Data loaders
 train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-eval_loader = DataLoader(eval_dataset, batch_size=8, shuffle=False)
 
-# Optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=2e-5, weight_decay=0.01)
+optimizer = torch.optim.Adam(list(model.parameters()) + list(predictor.parameters()), lr=2e-5, weight_decay=0.01)
 
 # Training loop
-step = 0
 for epoch in range(10):
     model.train()
+    predicwelltor.train()
     for batch in train_loader:
         optimizer.zero_grad()
         embedding = model(batch)
@@ -65,26 +108,101 @@ for epoch in range(10):
         loss = F.mse_loss(out, batch.y)
         loss.backward()
         optimizer.step()
-        
-        step += 1
-        if step % 50 == 0:
-            # Every 50 steps, get real synthesis estimates for a random training sample
-            idx = random.randint(0, len(train_graphs) - 1)
-            real_area, real_power = get_real_area_power(train_graphs[idx])
-            est_area, est_power = train_labels[idx]
-            print(f"Step {step}: Real vs Estimated - Area: {real_area:.2f} vs {est_area:.2f}, Power: {real_power:.2f} vs {est_power:.2f}")
-        
     print(f"Epoch {epoch+1} completed")
 
+# Now use the trained predictor in RL
+class AdderEnv(gym.Env):
+    def __init__(self, predictor_model, graph_model, n_bits=16, max_steps=10):
+        super(AdderEnv, self).__init__()
+        self.n = n_bits
+        self.max_steps = max_steps
+        self.action_space = gym.spaces.Discrete(self.n * self.n * 2)  # add/remove edge between i,j
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.n * 4 + self.n * self.n,), dtype=np.float32)
+        self.predictor = predictor_model
+        self.graph_model = graph_model
+        self.graph_model.eval()
+        self.predictor.eval()
+        self.reset()
+
+    def reset(self):
+        self.current_graph = generate_rca_graph(self.n)  # Start with RCA
+        self.update_features()  # Ensure features are up to date
+        self.step_count = 0
+        self.current_cost = self.compute_cost()
+        return self.get_obs()
+
+    def get_obs(self):
+        # Get adjacency matrix
+        adj = torch.zeros(self.n, self.n)
+        adj[self.current_graph.edge_index[0], self.current_graph.edge_index[1]] = 1
+        # Flatten x and adj
+        obs = torch.cat([self.current_graph.x.flatten(), adj.flatten()])
+        return obs.numpy().astype(np.float32)
+
+    def update_features(self):
+        edge_index = self.current_graph.edge_index
+        n = self.n
+        fan_in = degree(edge_index[1], num_nodes=n).float()
+        fan_out = degree(edge_index[0], num_nodes=n).float()
+        delay_levels = compute_delay_levels(edge_index, n)
+        bit_positions = torch.arange(n, dtype=torch.float)
+        self.current_graph.x = torch.stack([bit_positions, fan_in, fan_out, delay_levels], dim=1)
+
+    def step(self, action):
+        # Decode action: add_remove = action // (n*n), i = (action % (n*n)) // n, j = action % n
+        total = self.n * self.n
+        add_remove = action // total
+        idx = action % total
+        i = idx // self.n
+        j = idx % self.n
+        if i == j:
+            # No self-loops
+            reward = 0
+        else:
+            edge_exists = (self.current_graph.edge_index[0] == i).any() and (self.current_graph.edge_index[1] == j).any()
+            if add_remove == 0:  # remove
+                if edge_exists:
+                    # Remove edge
+                    mask = ~((self.current_graph.edge_index[0] == i) & (self.current_graph.edge_index[1] == j))
+                    self.current_graph.edge_index = self.current_graph.edge_index[:, mask]
+                    self.update_features()
+                    new_cost = self.compute_cost()
+                    reward = self.current_cost - new_cost
+                    self.current_cost = new_cost
+                else:
+                    reward = 0
+            else:  # add
+                if not edge_exists:
+                    # Add edge
+                    new_edge = torch.tensor([[i], [j]], dtype=torch.long)
+                    self.current_graph.edge_index = torch.cat([self.current_graph.edge_index, new_edge], dim=1)
+                    self.update_features()
+                    new_cost = self.compute_cost()
+                    reward = self.current_cost - new_cost
+                    self.current_cost = new_cost
+                else:
+                    reward = 0
+        self.step_count += 1
+        done = self.step_count >= self.max_steps
+        return self.get_obs(), reward, done, {}
+
+# Load RL model
+env = AdderEnv(predictor, model)
+rl_model = PPO(GraphPolicy, env, verbose=1)
+
+# Training
+rl_model.learn(total_timesteps=10000)
+
 # Evaluation
-model.eval()
-total_mse = 0
-count = 0
-with torch.no_grad():
-    for batch in eval_loader:
-        embedding = model(batch)
-        out = predictor(embedding)
-        mse = F.mse_loss(out, batch.y)
-        total_mse += mse.item()
-        count += 1
-print(f"Average MSE: {total_mse / count}")
+total_reward = 0
+num_episodes = 20
+for _ in range(num_episodes):
+    obs = env.reset()
+    done = False
+    episode_reward = 0
+    while not done:
+        action, _ = rl_model.predict(obs)
+        obs, reward, done, info = env.step(action)
+        episode_reward += reward
+    total_reward += episode_reward
+print(f"Average reward: {total_reward / num_episodes}")
