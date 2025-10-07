@@ -1,3 +1,4 @@
 *.sif
 OpenROAD/OpenROAD-flow-scripts/
 OpenROAD/prefix-flow/results
+/out/
