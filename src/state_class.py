@@ -255,18 +255,24 @@ class State(object):
             "adder_nangate45_{}.sdc".format(file_name_prefix)))
         fopen_tcl.close()
         
-        command = "openroad {}adder_nangate45_{}.tcl".format(openroad_path, file_name_prefix)
+        # Ensure openroad_path ends with '/' for consistent path handling
+        if not openroad_path.endswith('/'):
+            openroad_path = openroad_path + '/'
+            
+        tcl_script = "adder_nangate45_{}.tcl".format(file_name_prefix)
+        command = "openroad {}".format(tcl_script)
         # print("COMMAND: {}".format(command))
-        output = subprocess.check_output(['openroad',
-            "{}adder_nangate45_{}.tcl".format(openroad_path, file_name_prefix)], 
-            cwd="{}".format(openroad_path)).decode('utf-8')
+        print("Working directory: {}".format(openroad_path))
+        
+        output = subprocess.check_output(['openroad', tcl_script], 
+            cwd=openroad_path).decode('utf-8')
+        
         note = None
         retry = 0
         area, wslack, power, note = substract_results(output)
         while note is None and retry < 3:
-            output = subprocess.check_output(['openroad',
-                "{}adder_nangate45_{}.tcl".format(openroad_path, file_name_prefix)], 
-                shell=True, cwd="{}".format(openroad_path)).decode('utf-8')
+            output = subprocess.check_output(['openroad', tcl_script], 
+                cwd=openroad_path).decode('utf-8')
             area, wslack, power, note = substract_results(output)
             retry += 1
         if os.path.exists(yosys_file_name):

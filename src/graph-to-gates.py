@@ -25,10 +25,10 @@ def parse_arguments():
     parser.add_argument('-n','--input_bitwidth', type = int, required=True)
     parser.add_argument('--adder_type', type = int, required=True)
     parser.add_argument('--step_count', type = int, default = 1666)
-    parser.add_argument('--openroad_path', type = str, default = '/home')
+    parser.add_argument('--openroad_path', type = str, default = 'OpenROAD/prefix-flow/')
     # parser.add_argument('--save_verilog', action = 'store_true', default = False)
     parser.add_argument('--synth', action = 'store_true', default = False)
-    parser.add_argument('--output_dir', type = str, default = 'out',
+    parser.add_argument('--output_dir', type = str, default = 'out/',
                        help='Output directory for generated files')
     parser.add_argument('--mode', type = str, choices=['generate', 'train'], default='generate',
                        help='Mode: generate initial Verilog or run training')
