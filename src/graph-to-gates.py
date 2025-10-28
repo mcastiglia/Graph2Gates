@@ -17,6 +17,8 @@ import global_vars
 from init_graphs import get_normal_init, get_brent_kung_init, get_sklansky_init
 from node_class import Node
 args = None
+result_cache = {}
+cache_hit = 0
 
 def parse_arguments():
     global args, INPUT_BIT, flog
@@ -197,7 +199,238 @@ def recover_cell_map_from_cell_map_str(cell_map_str):
             cell_map[i, j] = int(cell_map_str[i * INPUT_BIT + j])
     return cell_map
 
+def output_cell_map(input_bitwidth, max_levels, cell_map, hash_value, output_dir):
+        verilog_mid_dir = os.path.join(output_dir, "run_verilog_mid")
+        if not os.path.exists(verilog_mid_dir):
+            os.mkdir(verilog_mid_dir)
+        fdot_save = open(os.path.join(verilog_mid_dir, "adder_{}b_{}_{}_{}.log".format(input_bitwidth, 
+                int(max_levels), int(cell_map.sum()-input_bitwidth),
+                hash_value)), 'w')
+        for i in range(input_bitwidth):
+            for j in range(input_bitwidth):
+                fdot_save.write("{}".format(str(int(cell_map[i, j]))))
+            fdot_save.write("\n")
+        fdot_save.write("\n")
+        fdot_save.close()
 
+def get_represent_int(input_bitwidth, cell_map):
+    rep_int = 0
+    for i in range(1, input_bitwidth):
+        for j in range(i):
+            if cell_map[i,j] == 1:
+                rep_int = rep_int * 2 + 1
+            else:
+                rep_int *= 2
+    return rep_int
+    
+def output_verilog(input_bitwidth, max_levels, cell_map, hash_value, output_dir, file_name = None):
+        verilog_mid_dir = os.path.join(output_dir, "run_verilog_mid")
+        if not os.path.exists(verilog_mid_dir):
+            os.mkdir(verilog_mid_dir)
+            
+        # Create a unique hash identifier for each adder state
+        rep_int = get_represent_int(input_bitwidth, cell_map)
+        hash_value = hashlib.md5(str(rep_int).encode()).hexdigest()
+        output_cell_map(input_bitwidth, max_levels, cell_map, hash_value, output_dir)
+        if file_name is None:
+            file_name = os.path.join(verilog_mid_dir, "adder_{}b_{}_{}_{}.v".format(input_bitwidth, 
+                int(max_levels), int(cell_map.sum()-input_bitwidth),
+                hash_value))
+        verilog_file_name = file_name.split("/")[-1]
+
+        verilog_file = open(file_name, "w")
+        verilog_file.write("module adder_top(\n")
+        verilog_file.write("\tinput [{}:0] a,b,\n".format(input_bitwidth-1))
+        verilog_file.write("\toutput [{}:0] s,\n".format(input_bitwidth-1))
+        verilog_file.write("\toutput cout\n")
+        verilog_file.write(");\n\n")
+        wires = set()
+        for i in range(input_bitwidth):
+            wires.add("c{}".format(i))
+        
+        for x in range(input_bitwidth-1, 0, -1):
+            last_y = x
+            for y in range(x-1, -1, -1):
+                if cell_map[x, y] == 1:
+                    assert cell_map[last_y-1, y] == 1
+                    if y==0:
+                        wires.add("g{}_{}".format(x, last_y))
+                        wires.add("p{}_{}".format(x, last_y))
+                        wires.add("g{}_{}".format(last_y-1, y))
+                    else:
+                        wires.add("g{}_{}".format(x, last_y))
+                        wires.add("p{}_{}".format(x, last_y))
+                        wires.add("g{}_{}".format(last_y-1, y))
+                        wires.add("p{}_{}".format(last_y-1, y))
+                        wires.add("g{}_{}".format(x, y))
+                        wires.add("p{}_{}".format(x, y))
+                    last_y = y
+        
+        for i in range(input_bitwidth):
+            wires.add("p{}_{}".format(i, i))
+            wires.add("g{}_{}".format(i, i))
+            wires.add("c{}".format(x))
+        assert 0 not in wires
+        assert "0" not in wires
+        verilog_file.write("wire ")
+        
+        for i, wire in enumerate(wires):
+            if i < len(wires) - 1:
+                    verilog_file.write("{},".format(wire))
+            else:
+                verilog_file.write("{};\n".format(wire))
+        verilog_file.write("\n")
+        
+        for i in range(input_bitwidth):
+            verilog_file.write('assign p{}_{} = a[{}] ^ b[{}];\n'.format(i,i,i,i))
+            verilog_file.write('assign g{}_{} = a[{}] & b[{}];\n'.format(i,i,i,i))
+        
+        for i in range(1, input_bitwidth):
+            verilog_file.write('assign g{}_0 = c{};\n'.format(i, i))
+        
+        for x in range(input_bitwidth-1, 0, -1):
+            last_y = x
+            for y in range(x-1, -1, -1):
+                if cell_map[x, y] == 1:
+                    assert cell_map[last_y-1, y] == 1
+                    if y == 0: # add grey module
+                        verilog_file.write('GREY grey{}(g{}_{}, p{}_{}, g{}_{}, c{});\n'.format(
+                            x, x, last_y, x, last_y, last_y-1, y, x
+                        ))
+                    else:
+                        verilog_file.write('BLACK black{}_{}(g{}_{}, p{}_{}, g{}_{}, p{}_{}, g{}_{}, p{}_{});\n'.format(
+                            x, y, x, last_y, x, last_y, last_y-1, y, last_y-1, y, x, y, x, y 
+                        ))
+                    last_y = y
+        
+        verilog_file.write('assign s[0] = a[0] ^ b[0];\n')
+        verilog_file.write('assign c0 = g0_0;\n')
+        verilog_file.write('assign cout = c{};\n'.format(input_bitwidth-1))
+        for i in range(1, self.input_bit):
+            verilog_file.write('assign s[{}] = p{}_{} ^ c{};\n'.format(i, i, i, i-1))
+        verilog_file.write("endmodule")
+        verilog_file.write("\n\n")
+
+        verilog_file.write(global_vars.GREY_CELL)
+        verilog_file.write("\n")
+        verilog_file.write(global_vars.BLACK_CELL)
+        verilog_file.write("\n")
+        verilog_file.close()
+
+    # Create and run yosys script to map current adder state to a technology library
+    def run_yosys(verilog_file_name, output_dir, openroad_path, synth):
+        yosys_mid_dir = os.path.join(output_dir, "run_yosys_mid")
+        if not os.path.exists(yosys_mid_dir):
+            os.mkdir(yosys_mid_dir)
+        dst_file_name = os.path.join(yosys_mid_dir, verilog_file_name.split(".")[0] + "_yosys.v")
+        file_name_prefix = verilog_file_name.split(".")[0] + "_yosys"
+        if os.path.exists(dst_file_name):
+            return
+        src_file_path = os.path.join(output_dir, "run_verilog_mid", verilog_file_name)
+
+        yosys_script_dir = os.path.join(output_dir, "run_yosys_script")
+        if not os.path.exists(yosys_script_dir):
+            os.mkdir(yosys_script_dir)
+        yosys_script_file_name = os.path.join(yosys_script_dir, 
+            "{}.ys".format(file_name_prefix))
+        fopen = open(yosys_script_file_name, "w")
+        fopen.write(global_vars.yosys_script_format.format(src_file_path, openroad_path, dst_file_name))
+        fopen.close()
+        _ = subprocess.check_output(["yosys {}".format(yosys_script_file_name)], shell= True)
+        # Keep source files for synthesis if synth flag is set
+        if not synth:
+            os.remove(src_file_path)
+    
+    def extract_results(report):
+        lines = report.split("\n")[-15:]
+        area = -100.0
+        wslack = -100.0
+        power = 0.0
+        note = None
+        for line in lines:
+            if not line.startswith("result:") and not line.startswith("Total"):
+                continue
+            print("line", line)
+            if "design_area" in line:
+                area = float(line.split(" = ")[-1])
+            elif "worst_slack" in line:
+                wslack = float(line.split(" = ")[-1])
+                note = lines
+            elif "Total" in line:
+                power = float(line.split()[-2])
+
+        return area, wslack, power, note
+    
+    def run_openroad(verilog_file_name, output_dir, openroad_path):
+        global result_cache
+        global cache_hit
+
+        file_name_prefix = verilog_file_name.split(".")[0]
+        hash_idx = file_name_prefix.split("_")[-1]
+        if hash_idx in result_cache:
+            delay = result_cache[hash_idx]["delay"]
+            area = result_cache[hash_idx]["area"]
+            power = result_cache[hash_idx]["power"]
+            cache_hit += 1
+            delay = delay
+            area = area
+            power = power
+            return delay, area, power
+        
+        verilog_file_path = "{}adder_tmp_{}.v".format(openroad_path, file_name_prefix)
+        yosys_file_name = os.path.join(output_dir, "run_yosys_mid", verilog_file_name.split(".")[0] + "_yosys.v")
+        shutil.copyfile(yosys_file_name, verilog_file_path)
+        
+        sdc_file_path = "{}adder_nangate45_{}.sdc".format(openroad_path, file_name_prefix)
+        fopen_sdc = open(sdc_file_path, "w")
+        fopen_sdc.write(global_vars.sdc_format)
+        fopen_sdc.close()
+        fopen_tcl = open("{}adder_nangate45_{}.tcl".format(openroad_path, file_name_prefix), "w")
+        fopen_tcl.write(global_vars.openroad_tcl.format("adder_tmp_{}.v".format(file_name_prefix), 
+            "adder_nangate45_{}.sdc".format(file_name_prefix)))
+        fopen_tcl.close()
+        
+        # Ensure openroad_path ends with '/' for consistent path handling
+        if not openroad_path.endswith('/'):
+            openroad_path = openroad_path + '/'
+            
+        tcl_script = "adder_nangate45_{}.tcl".format(file_name_prefix)
+        command = "openroad {}".format(tcl_script)
+        # print("COMMAND: {}".format(command))
+        print("Working directory: {}".format(openroad_path))
+        
+        output = subprocess.check_output(['openroad', tcl_script], 
+            cwd=openroad_path).decode('utf-8')
+        
+        note = None
+        retry = 0
+        area, wslack, power, note = extract_results(output)
+        while note is None and retry < 3:
+            output = subprocess.check_output(['openroad', tcl_script], 
+                cwd=openroad_path).decode('utf-8')
+            area, wslack, power, note = substract_results(output)
+            retry += 1
+        if os.path.exists(yosys_file_name):
+            os.remove(yosys_file_name)
+        if os.path.exists("{}adder_nangate45_{}.tcl".format(openroad_path, 
+                file_name_prefix)):
+            os.remove("{}adder_nangate45_{}.tcl".format(openroad_path, file_name_prefix))
+        if os.path.exists("{}/adder_nangate45_{}.sdc".format(openroad_path, 
+                file_name_prefix)):
+            os.remove("{}adder_nangate45_{}.sdc".format(openroad_path, file_name_prefix))
+        if os.path.exists("{}/adder_tmp_{}.v".format(openroad_path, 
+                file_name_prefix)):
+            os.remove("{}adder_tmp_{}.v".format(openroad_path,file_name_prefix))
+        delay = global_vars.CLOCK_PERIOD_TARGET - wslack
+        delay *= 1000
+        delay = delay
+        area = area
+        power = power
+        
+        # Cache PPA results for future states
+        result_cache[hash_idx] = {"delay": delay, "area": area, "power": power}
+        return delay, area, power
+    
 def generate_initial_verilog():
     """Generate Verilog file for the initial adder state without running training"""
     print("=" * 60)
@@ -207,17 +440,17 @@ def generate_initial_verilog():
     # Get initial state based on adder type
     if global_vars.initial_adder_type == 0:
         print("Using Normal (Linear) adder initialization")
-        init_state = get_normal_init(args.input_bitwidth)
+        cell_map, min_map = get_normal_cell_map(args.input_bitwidth)
     elif global_vars.initial_adder_type == 1:
         print("Using Sklansky adder initialization")
-        init_state = get_sklansky_init(args.input_bitwidth)
+        cell_map, min_map = get_sklansky_cell_map(args.input_bitwidth)
     else:
         print("Using Brent-Kung adder initialization")
-        init_state = get_brent_kung_init(args.input_bitwidth)
+        cell_map, min_map = get_brent_kung_cell_map(args.input_bitwidth)
     
     # Generate Verilog file
     print(f"Generating Verilog for {INPUT_BIT}-bit adder...")
-    init_state.output_verilog(args.output_dir)
+    output_verilog(args.input_bitwidth, max_levels, cell_map, hash_value, args.output_dir)
     print(f"Verilog file generated: {init_state.verilog_file_name}")
     
     # Optional: Run synthesis and analysis
