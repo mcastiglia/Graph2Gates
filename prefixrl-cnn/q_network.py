@@ -4,6 +4,7 @@ from typing import Optional, Sequence, Tuple, Union, Dict
 import numpy as np
 import torch
 import torch.nn as nn
+import random
     
 # Residual block for the CNN (Adapted from PrefixRL Figure 2)
 class ResidualBlock(nn.Module):
@@ -246,7 +247,7 @@ def get_random_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float =
     
     return action_coords, is_add
 
-# TODO: This was vibe coded. I need to test this and make sure it works
+# TODO: This was vibe coded. I need to test this and make sure it works. Michael: Looks good to me based on what I know and was able to find but still untested.
 # A replay buffer stores past experiences (state, action, reward, next_state, done), which are subsequently
 # randomly sampled to break correlation between consecutive updates, which increases the stability of the network
 class ReplayBuffer:
@@ -266,7 +267,7 @@ class ReplayBuffer:
             self.buf[self.pos] = tup
         self.pos = (self.pos + 1) % self.capacity
 
-    # Sample a batch of experiences from the buffer
+    # Sample a batch of experiences from the buffer, without replacement
     def sample(self, batch_size: int):
         batch = random.sample(self.buf, batch_size)
         s, a, i, j, r, s2, d = zip(*batch)
