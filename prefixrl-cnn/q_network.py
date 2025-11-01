@@ -5,7 +5,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import random
-    
+import global_vars
+
 # Residual block for the CNN (Adapted from PrefixRL Figure 2)
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int, kernel_size: int = 5, negative_slope: float = 0.01, norm: str = "bn", gn_groups: int = 32):
@@ -196,7 +197,6 @@ def scalarize_q(qmaps: torch.Tensor, w_area: float = 0.5, w_delay: float = 0.5, 
     s_del = w_area * (c_area * q_area_del) + w_delay * (c_delay * q_delay_del)
     
     return torch.stack([s_add, s_del], dim=1)
-
 
 # Argmax the scores to get the best action for adding and deleting nodes (Adapted from PrefixRL Section B)
 def argmax_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float = 1.0) -> Tuple[bool, torch.Tensor]:

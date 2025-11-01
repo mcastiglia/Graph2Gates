@@ -1,6 +1,7 @@
 flog = ""
 start_time = {}
-initial_adder_type = None
+input_bitwidth = 32
+initial_adder_type = 0
 
 BLACK_CELL = '''module BLACK (
 \tinput gik, pik, gkj, pkj,
