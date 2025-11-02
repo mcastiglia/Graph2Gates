@@ -1,6 +1,6 @@
 
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple, Union, Dict
+from typing import Optional, Sequence, Tuple, Union, Dict, List
 import numpy as np
 import random
 import torch
@@ -73,7 +73,7 @@ class PrefixRL_DQN(nn.Module):
 
         self._init_weights(negative_slope)
 
-    def _init_weights(self, negative_slope: float):
+    def _init_weights(self, negative_slope: float) -> None:
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, a=negative_slope, mode="fan_out", nonlinearity="leaky_relu")
@@ -143,7 +143,7 @@ def build_features(
     return torch.from_numpy(arr).to(device=device, dtype=dtype)
 
 # Normalize the features to [0,1] (Adapted from PrefixRL Section C)
-def normalize_features(arr, denom: Optional[float], eps: float = 1e-8, clip: bool = True):
+def normalize_features(arr, denom: Optional[float], eps: float = 1e-8, clip: bool = True) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float32)
     if denom is None:
         m = float(arr.max()) if arr.size > 0 else 1.0
@@ -259,7 +259,7 @@ def scalarize_q(qmaps: torch.Tensor, w_area, w_delay, c_area: float = 1e-3, c_de
 
 
 # Argmax the scores to get the best action for adding and deleting nodes (Adapted from PrefixRL Section B)
-def argmax_action(qmaps: torch.Tensor, w_area, w_delay):
+def argmax_action(qmaps: torch.Tensor, w_area, w_delay) -> Tuple[torch.Tensor, torch.Tensor]:
     # [B,2,N,N] tensor represented the scalarized Q-values for adding and deleting nodes
     scores = scalarize_q(qmaps, w_area, w_delay)  # (B,2,N,N)
     
@@ -291,13 +291,13 @@ def get_best_action(qmaps: torch.Tensor, w_area, w_delay) -> Tuple[Tuple[int, in
 # Sample an epsilon value for epsilon-greedy exploration
 # Adapted from Multi-objective Reinforcement Learning with Adaptive Pareto Reset for Prefix Adder Design, page 11
 # TODO: epsilon should anneal to zero over time
-def sample_epsilon():
+def sample_epsilon() -> float:
     i = torch.randint(0, 1024, (1,)).item()
     eps = 0.4 ** (1 + 7 * i / 1023)
     return eps
 
 # Select a random action from the scalarized Q-values
-def get_random_action(qmaps: torch.Tensor, w_area, w_delay, fill_value: float = -torch.inf):
+def get_random_action(qmaps: torch.Tensor, w_area, w_delay, fill_value: float = -torch.inf) -> Tuple[Tuple[int, int], bool, torch.Tensor]:
     
     scores = scalarize_q(qmaps, w_area, w_delay)  # (B,2,N,N)
     
@@ -354,7 +354,7 @@ class ReplayBuffer:
     def __len__(self): return len(self.buf)
 
     # Add experience to the buffer
-    def push(self, S1_feats, action, action_idx, reward, S2_feats, done):
+    def push(self, S1_feats, action, action_idx, reward, S2_feats, done) -> None:
         print("Current length of buffer: ", len(self.buf))
         print("Capacity of buffer: ", self.capacity)
         
@@ -370,7 +370,7 @@ class ReplayBuffer:
         self.pos = (self.pos + global_vars.batch_size) % self.capacity
 
     # Sample a batch of experiences from the buffer
-    def sample(self):
+    def sample(self) -> List[BufferElement]:
         return random.sample(self.buf, global_vars.batch_size)
     
 def compute_reward(current_metrics, next_metrics, w_area, w_delay, c_area: float = 1e-3, c_delay: float = 10.0) -> float:
@@ -392,7 +392,7 @@ class TrainingConfig:
     c_delay: float = 10.0                       # paper’s scaling
     
     
-def train(cfg: TrainingConfig, device=None):
+def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]:
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # TODO: PrefixRL uses a double DQN architecture, where there is an online network (net) and an offline network (tgt)
