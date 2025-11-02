@@ -430,7 +430,7 @@ def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]
         current_states = [current_state] * B
         
         # Sample a new value for epsilon-greedy exploration (PrefixRL Section III B)
-        epsilon = sample_epsilon()
+        epsilon = sample_epsilon(episode)
         print("epsilon: ", epsilon)
         
         # Train for num_steps steps per episode
