@@ -32,7 +32,7 @@ def init_graph_serial(n: int):
         minlist[m, 0] = 0
     size = nodelist.sum() - n
     
-    state = Graph_State(level, n, size, nodelist, levellist, minlist, 0, 0, 0, 0)
+    state = Graph_State(level, n, size, nodelist, levellist, minlist, 0)
     
     return state
 
@@ -65,7 +65,7 @@ def init_graph_sklansky(n: int):
     level = levellist.max()
     size = nodelist.sum() - n
     
-    state = Graph_State(level, n, size, nodelist, levellist, minlist, 0, 0, 0, 0)
+    state = Graph_State(level, n, size, nodelist, levellist, minlist, 0)
     state.nodelist, state.minlist = state.legalize(nodelist, minlist)
     state.update_available_choice()
     return state
@@ -102,7 +102,7 @@ def init_graph_brent_kung(n: int):
         minlist[i, 0] = 0
     size = nodelist.sum() - n
     print("BK level ={}, size = {}".format(levellist.max(), nodelist.sum()-n))
-    state = Graph_State(level, n, size, nodelist, levellist, minlist, 0, 0, 0, 0)
+    state = Graph_State(level, n, size, nodelist, levellist, minlist, 0)
     
     return state
         

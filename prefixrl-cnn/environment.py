@@ -6,21 +6,20 @@ import math
 import hashlib
 import subprocess
 import shutil
+import torch
+from typing import List, Tuple
+import time
 
 step_num = 0
 
 class Graph_State(object):
-    def __init__(self, level, n, size, nodelist, levellist, minlist, step_num, action, reward, level_bound_delta):
-        self.current_value = 0.0
-        self.current_round_index = 0
+    def __init__(self, level, n, size, nodelist, levellist, minlist, level_bound_delta):
         self.n = n
-        self.cumulative_choices = []
         self.level = level
         self.nodelist = nodelist
         self.levellist = levellist
         self.fanoutlist = np.zeros((self.n, self.n), dtype=np.int8)
         self.minlist = minlist
-        self.reward = reward
         self.size = size
         self.delay = None
         self.area = None
@@ -29,31 +28,6 @@ class Graph_State(object):
         
         # Check if the number of nodes is correct
         assert (self.nodelist.sum() - self.n) == self.size
-
-        upper_triangle_mask = np.triu(np.ones((self.n, self.n), dtype = np.int8),
-            k = 1)
-        self.prob = np.ones((2, self.n, self.n), dtype = np.int8)
-        self.prob[0] = np.where(self.nodelist >= 1.0, 0, self.prob[0])
-        self.prob[0] = np.where(upper_triangle_mask >= 1.0, 0, self.prob[0])
-        self.prob[1] = np.where(self.minlist <= 0.0, 0, self.prob[1])
-        self.prob[1] = np.where(upper_triangle_mask >= 1.0, 0, self.prob[1])
-
-        self.available_choicelist = []
-        cnt = 0
-        for i in range(self.n):
-            for j in range(self.n):
-                if self.prob[1, i, j] == 1:
-                    self.available_choicelist.append(self.n **2 +i* self.n+j)
-                    cnt += 1
-        for i in range(self.n):
-            for j in range(self.n):
-                if self.prob[0, i, j] == 1:
-                    self.available_choicelist.append(i* self.n+j)
-                    cnt += 1
-                    
-        self.choice_count = cnt
-        self.action = action
-        self.step_num = step_num
         
     # Get integer representation of the nodelist for hashing (Taken from ArithTreeRL)
     def get_represent_int(self):
@@ -82,6 +56,7 @@ class Graph_State(object):
             
         # Delete a node from the nodelist
         elif action_type == 1:
+            # TODO: Sometimes this assertion fails
             assert self.minlist[x, y] == 1
             assert self.nodelist[x, y] == 1
             next_nodelist[x, y] = 0
@@ -133,134 +108,20 @@ class Graph_State(object):
                     self.fanoutlist[prev_l-1,l] += 1
                     self.fanoutlist[m, prev_l] += 1
                     prev_l = l
-
-    # Update the available choice list of adding nodes based on nodelist and minlist (Taken from ArithTreeRL)
-    def update_available_choice(self):
-        upper_triangle_mask = np.triu(np.ones((self.n, self.n)), k = 1)
-        prob = np.ones((2, self.n, self.n), dtype = np.int8)
-        prob[0] = np.where(self.nodelist >= 1.0, 0, prob[0])
-        prob[0] = np.where(upper_triangle_mask >= 1.0, 0, prob[0])
-        prob[1] = np.where(self.minlist <= 0.0, 0, prob[1])
-        prob[1] = np.where(upper_triangle_mask >= 1.0, 0, prob[1])
-        
-        self.available_choicelist = []
-        cnt = 0
-        for i in range(self.n):
-            for j in range(self.n):
-                if prob[1, i, j] == 1:
-                    self.available_choicelist.append(self.n ** 2 + i * self.n + j)
-                    cnt += 1
-                    
-        self.choice_count = cnt
-
-    # Randomly select an action from the available choice list and return the next state (Adapted from ArithTreeRL)
-    # TODO: Selection decision should come not from a random choice, but from the choice of the DQN
-    def get_random_next_state(self):
-        try_step = 0
-        min_metric = 1e10
-        while self.choice_count > 0 and try_step < 4:
-            sample_prob = np.ones((self.choice_count))
-            choice_idx = np.random.choice(self.choice_count, size = 1, replace=False, 
-                    p = sample_prob/sample_prob.sum())[0]
-            random_choice = self.available_choicelist[choice_idx]
-            action_type = random_choice // (self.n ** 2)
-            x = (random_choice % (self.n ** 2)) // self.n
-            y = (random_choice % (self.n ** 2)) % self.n
-
-
-            next_nodelist, next_minlist, next_levellist = self.modify_nodelist(action_type,x,y)
-            
-            # next_nodelist = copy.deepcopy(self.nodelist)
-            # next_minlist = np.zeros((self.n, self.n))
-            # next_levellist = np.zeros((self.n, self.n))
-        
-            # if action_type == 0:
-            #     assert next_nodelist[x, y] == 0
-            #     next_nodelist[x, y] = 1
-            #     next_nodelist, next_minlist = legalize(self.n, next_nodelist, next_minlist)
-            # elif action_type == 1:
-            #     assert self.minlist[x, y] == 1
-            #     assert self.nodelist[x, y] == 1
-            #     next_nodelist[x, y] = 0
-            #     next_nodelist, next_minlist = legalize(self.n, next_nodelist, next_minlist)
-            # next_levellist = update_levellist(self.n, next_nodelist, next_levellist)
-            
-            next_level = next_levellist.max()
-            next_size = next_nodelist.sum() - self.n
-            next_step_num = self.step_num + 1
-            action = random_choice
-            reward = 0
-
-            next_state = Graph_State(next_level, self.n, next_size, next_nodelist,
-                next_levellist, next_minlist, next_step_num, action, reward, self.level_bound_delta)
-            
-            next_state.output_verilog()
-            next_state.run_yosys()
-            delay, area, power = next_state.run_openroad()
-            global_step += 1
-            # print("delay = {}, area = {}".format(delay, area))
-
-            next_state.delay = delay
-            next_state.area = area
-            next_state.power = power
-            next_state.update_fanout_map()
-            fanout = next_state.fanout_map.max()
-            
-            print("try_step = {}".format(try_step))
-            try_step += 1
-            flog.write("{}\t{:.2f}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{}\t{:d}\t{:.2f}\n".format(
-                        next_state.verilog_file_name.split(".")[0], 
-                        next_state.delay, next_state.area, next_state.power, 
-                        int(next_state.level), int(next_state.size), fanout,
-                        global_step, global_vars.cache_hit,
-                        0, time.time() - start_time))
-            record_num += 1
-            flog.flush()
-            
-            print("record_num : {}/{}".format(record_num, args.step))
-            
-            # Exit the program if the step count is reached
-            if record_num >= global_vars.step_count:
-                sys.exit()
-                
-            # Use area + delay unless the initial adder type is serial
-            candidate_min_metric = next_state.area + (next_state.delay if global_vars.initial_adder_type != 0 else 0)
-            current_metric = self.area + (self.delay if global_vars.initial_adder_type != 0 else 0)
-             
-            # Update the best next state if the updated area/delay metric is less than the current min metric
-            if candidate_min_metric < min_metric:
-                best_next_state = copy.deepcopy(next_state)
-                min_metric = candidate_min_metric
-                    
-            # If the updated area/delay metric is greater than the current metric, remove the action from the available choice list
-            if candidate_min_metric > current_metric:
-                self.available_choicelist.remove(random_choice)
-                self.choice_count -=1
-                assert self.choice_count == len(self.available_choicelist)
-                # continue
-            
-            self.cumulative_choices.append(action)
-            return next_state
-        
-        return best_next_state
     
     # Get the next state from the action and coordinates (x, y)
-    def get_next_state(self, action, action_coord):
-        next_nodelist, next_minlist, next_levellist = self.modify_nodelist(not action, action_coord[0], action_coord[1])
+    def evaluate_next_state(self, action_type, x, y):
+        start_time = time.time()
+        next_nodelist, next_minlist, next_levellist = self.modify_nodelist(not action_type, x, y)
         next_level = next_levellist.max()
         next_size = next_nodelist.sum() - self.n
-        next_step_num = self.step_num + 1
-        action = action
-        reward = 0
         
         next_state = Graph_State(next_level, self.n, next_size, next_nodelist,
-            next_levellist, next_minlist, next_step_num, action, reward, self.level_bound_delta)
+            next_levellist, next_minlist, self.level_bound_delta)
         
         next_state.output_verilog()
         next_state.run_yosys()
         delay, area, power = next_state.run_openroad()
-        # global_step += 1
-        # print("delay = {}, area = {}".format(delay, area))
 
         next_state.delay = delay
         next_state.area = area
@@ -268,6 +129,13 @@ class Graph_State(object):
         next_state.update_fanoutlist()
         fanout = next_state.fanoutlist.max()
     
+        global_vars.flog.write("{},{:.2f},{:.2f},{:.2f},{:d},{:d},{:d},{:d},{:.2f}\n".format(
+                next_state.verilog_file_name.split(".")[0], 
+                next_state.delay, next_state.area, next_state.power, 
+                int(next_state.level), int(next_state.size), fanout,
+                global_vars.cache_hit,time.time() - start_time))
+        global_vars.flog.flush()
+        
         return next_state
     
     # return best_next_state
@@ -466,7 +334,8 @@ class Graph_State(object):
                 file_name_prefix)):
             os.remove("{}adder_tmp_{}.v".format(global_vars.openroad_path,file_name_prefix))
         delay = global_vars.CLOCK_PERIOD_TARGET - wslack
-        delay *= 1000
+        # TODO: Removed the multiplier of 1000 to adjust these units to be in ns
+        # delay *= 1000
         self.delay = delay
         self.area = area
         self.power = power
@@ -483,7 +352,7 @@ class Graph_State(object):
         for line in lines:
             if not line.startswith("result:") and not line.startswith("Total"):
                 continue
-            print("line", line)
+            print("Report line:", line)
             if "design_area" in line:
                 area = float(line.split(" = ")[-1])
             elif "worst_slack" in line:
@@ -493,3 +362,18 @@ class Graph_State(object):
                 power = float(line.split()[-2])
 
         return area, wslack, power, note
+    
+    
+# Evaluate the next state metrics for each batch element
+# TODO: should be performed in parallel instead of sequentially
+def evaluate_next_state(current_states: List[Graph_State], best_action: torch.Tensor, action_x: torch.Tensor, action_y: torch.Tensor, batch_size: int):
+    next_states: List[Graph_State] = []
+    for b in range(batch_size):
+        action_type = best_action[b].item()
+        x = action_x[b].item()
+        y = action_y[b].item()
+        
+        next_state = current_states[b].evaluate_next_state(action_type, x, y)
+        next_states.append(next_state)
+        
+    return next_states

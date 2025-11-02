@@ -2,8 +2,14 @@
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple, Union, Dict
 import numpy as np
+import random
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import global_vars
+from init_states import init_graph
+from environment import evaluate_next_state
+from tqdm import tqdm
     
 # Residual block for the CNN (Adapted from PrefixRL Figure 2)
 class ResidualBlock(nn.Module):
@@ -86,17 +92,53 @@ class PrefixRL_DQN(nn.Module):
         return y
 
 # Build input tensor features from the nodelist, minlist, levellist, and fanoutlist (Adapted from PrefixRL Section C)
+# TODO: Added support for batching, function could be cleaned up
 def build_features(
     nodelist: np.ndarray, minlist: np.ndarray, levellist: np.ndarray, fanoutlist: np.ndarray, 
-    batch_size: int = 1, device: Optional[torch.device] = None, dtype: torch.dtype = torch.float32
+    batch_size: Optional[int] = None, device: Optional[torch.device] = None, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
 
-    # Normalize the levellist and fanoutlist to [0,1]
-    normalized_levellist = normalize_features(levellist, levellist.max())
-    normalized_fanoutlist = normalize_features(fanoutlist, fanoutlist.max())
+    if isinstance(nodelist, torch.Tensor):
+        nodelist = nodelist.cpu().numpy()
+    if isinstance(minlist, torch.Tensor):
+        minlist = minlist.cpu().numpy()
+    if isinstance(levellist, torch.Tensor):
+        levellist = levellist.cpu().numpy()
+    if isinstance(fanoutlist, torch.Tensor):
+        fanoutlist = fanoutlist.cpu().numpy()
+    
+    nodelist = np.asarray(nodelist)
+    minlist = np.asarray(minlist)
+    levellist = np.asarray(levellist)
+    fanoutlist = np.asarray(fanoutlist)
+    
+    is_batched = nodelist.ndim == 3
+    
+    # If the input is already batched, build features for each batch element
+    if is_batched:
+        B = nodelist.shape[0]
+        if batch_size is not None and B != batch_size:
+            raise ValueError(f"Batch size mismatch: input has {B} elements but batch_size={batch_size}")
+        
+        normalized_levellist = np.zeros_like(levellist, dtype=np.float32)
+        normalized_fanoutlist = np.zeros_like(fanoutlist, dtype=np.float32)
+        
+        for b in range(B):
+            levellist_max = levellist[b].max() if levellist[b].size > 0 else 1.0
+            fanoutlist_max = fanoutlist[b].max() if fanoutlist[b].size > 0 else 1.0
+            normalized_levellist[b] = normalize_features(levellist[b], levellist_max)
+            normalized_fanoutlist[b] = normalize_features(fanoutlist[b], fanoutlist_max)
+        
+        arr = np.stack([nodelist, minlist, normalized_levellist, normalized_fanoutlist], axis=1)
+    else:
+        if batch_size is None:
+            batch_size = 1
+        
+        normalized_levellist = normalize_features(levellist, levellist.max())
+        normalized_fanoutlist = normalize_features(fanoutlist, fanoutlist.max())
 
-    arr = np.stack([nodelist, minlist, normalized_levellist, normalized_fanoutlist], axis=0)  # (4, N, N)
-    arr = np.broadcast_to(arr, (batch_size,) + arr.shape).copy()  # (B, 4, N, N)
+        arr = np.stack([nodelist, minlist, normalized_levellist, normalized_fanoutlist], axis=0)
+        arr = np.broadcast_to(arr, (batch_size,) + arr.shape).copy()
     
     return torch.from_numpy(arr).to(device=device, dtype=dtype)
 
@@ -158,8 +200,12 @@ def apply_action_masks(qmaps: torch.Tensor, masks: Dict[str, torch.Tensor], fill
     B, _, N, M = qmaps.shape
     assert N == M, "Expected square maps (N==N)."
 
-    # Expand all masks to (B, N, N)
-    all_mask = masks["all"].to(device=qmaps.device).bool().expand(B, N, N)
+    all_mask_t = masks["all"].to(device=qmaps.device).bool()
+    if all_mask_t.ndim == 2:
+        all_mask = all_mask_t.expand(B, N, N)
+    else:
+        all_mask = all_mask_t
+    
     per_action = [
         masks["area_add"].to(qmaps.device).bool(),
         masks["area_del"].to(qmaps.device).bool(),
@@ -169,21 +215,36 @@ def apply_action_masks(qmaps: torch.Tensor, masks: Dict[str, torch.Tensor], fill
 
     out = qmaps.clone()
     
-    # Set all illegal actions marked as "True" in the all_mask to fill_value
     for a in range(4):
         out[:, a][all_mask] = fill_value
     
-    # Set all illegal actions marked as "True" in the per_action mask to fill_value
     for a in range(4):
         if per_action[a].any():
-            mask_a = per_action[a].expand(B, N, N)
+            mask_a = per_action[a]
+            if mask_a.ndim == 2:
+                mask_a = mask_a.expand(B, N, N)
             out[:, a][mask_a] = fill_value
             
     return out
 
+# Build and apply action masks to the Q-maps for a batch of states
+def build_and_apply_action_masks_batch(qmaps: torch.Tensor, feats: torch.Tensor, N: int) -> torch.Tensor:
+    B = qmaps.size(0)
+    mask_list = [build_action_masks(N, feats[b,0], feats[b,0]) for b in range(B)]
+
+    action_masks = {
+        "all": torch.stack([mask_list[b]["all"] for b in range(B)]),
+        "area_add": torch.stack([mask_list[b]["area_add"] for b in range(B)]),
+        "area_del": torch.stack([mask_list[b]["area_del"] for b in range(B)]),
+        "delay_add": torch.stack([mask_list[b]["delay_add"] for b in range(B)]),
+        "delay_del": torch.stack([mask_list[b]["delay_del"] for b in range(B)]),
+    }
+    
+    q_masked = apply_action_masks(qmaps, action_masks)
+    return q_masked
+
 # Scalarize the Q-maps to get the scores for adding and deleting nodes (Adapted from PrefixRL Section B)
-# TODO: PrefixRL says w_area + w_delay = 1.0 and both are non-negative. Different values in w_area and w_delay explore different tradeoffs in area and delay.
-def scalarize_q(qmaps: torch.Tensor, w_area: float = 0.5, w_delay: float = 0.5, c_area: float = 1e-3, c_delay: float = 10.0) -> torch.Tensor:
+def scalarize_q(qmaps: torch.Tensor, w_area, w_delay, c_area: float = 1e-3, c_delay: float = 10.0) -> torch.Tensor:
     assert qmaps.dim() == 4 and qmaps.size(1) == 4, "Expected (B,4,N,N)"
     q_area_add = qmaps[:, 0]
     q_area_del = qmaps[:, 1]
@@ -198,7 +259,7 @@ def scalarize_q(qmaps: torch.Tensor, w_area: float = 0.5, w_delay: float = 0.5, 
 
 
 # Argmax the scores to get the best action for adding and deleting nodes (Adapted from PrefixRL Section B)
-def argmax_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float = 1.0):
+def argmax_action(qmaps: torch.Tensor, w_area, w_delay):
     # [B,2,N,N] tensor represented the scalarized Q-values for adding and deleting nodes
     scores = scalarize_q(qmaps, w_area, w_delay)  # (B,2,N,N)
     
@@ -211,7 +272,7 @@ def argmax_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float = 1.0
     return best_is_add, best_vals
 
 # Extract the best action and coordinates for each batch element
-def get_best_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float = 1.0) -> Tuple[Tuple[int, int], bool]:
+def get_best_action(qmaps: torch.Tensor, w_area, w_delay) -> Tuple[Tuple[int, int], bool]:
     best_is_add, best_vals = argmax_action(qmaps, w_area, w_delay)
     
     batch_size = qmaps.size(0)
@@ -225,73 +286,99 @@ def get_best_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float = 1
     is_add = best_is_add[batch, i, j]
     action_coords = torch.stack([i, j], dim=1)
     
-    return action_coords, is_add
+    return action_coords, is_add, max_per_batch
 
-# TODO: The .random() function does not exist for how I'm using it. Needs to be fixed
-def get_random_action(qmaps: torch.Tensor, w_area: float = 1.0, w_delay: float = 1.0):
-    batch_size = qmaps.size(0)
-    N = qmaps.size(2)
-    random_per_batch, flat_idx = qmaps.view(batch_size, -1).random(dim=1)
+# Sample an epsilon value for epsilon-greedy exploration
+# Adapted from Multi-objective Reinforcement Learning with Adaptive Pareto Reset for Prefix Adder Design, page 11
+def sample_epsilon():
+    i = torch.randint(0, 1024, (1,)).item()
+    eps = 0.4 ** (1 + 7 * i / 1023)
+    return eps
+
+# Select a random action from the scalarized Q-values
+def get_random_action(qmaps: torch.Tensor, w_area, w_delay, fill_value: float = -1e9):
     
-    i = torch.div(flat_idx, N, rounding_mode='floor')
-    j = flat_idx % N
+    scores = scalarize_q(qmaps, w_area, w_delay)  # (B,2,N,N)
     
-    batch = torch.arange(batch_size, device=best_vals.device)
-    is_add = best_is_add[batch, i, j]
+    B, C, N, M = scores.shape
+    
+    scores_mask = scores > fill_value
+
+    # Create and select the max value from a random tensor, masking out invalid actions
+    rand_tensor = torch.rand(B, C, N, M, device=scores.device)
+    rand_masked = rand_tensor.masked_fill(~scores_mask, -1.0)            # invalids can’t win
+    flat_idx = rand_masked.view(B, -1).argmax(dim=1)
+    
+    spatial_size = N * M
+    channel_idx = flat_idx // spatial_size
+    spatial_idx = flat_idx % spatial_size
+    
+    i = spatial_idx // M
+    j = spatial_idx % M
+    
+    is_add = channel_idx == 0
+    
     action_coords = torch.stack([i, j], dim=1)
+    rand_per_batch = scores[torch.arange(B, device=scores.device), channel_idx, i, j]
     
-    return action_coords, is_add
+    return action_coords, is_add, rand_per_batch
 
-# TODO: This was vibe coded. I need to test this and make sure it works
+@dataclass 
+class BufferElement:
+    S1_feats: torch.Tensor
+    action: torch.Tensor
+    action_idx: torch.Tensor
+    reward: torch.Tensor
+    S2_feats: torch.Tensor
+    done: bool
+
 # A replay buffer stores past experiences (state, action, reward, next_state, done), which are subsequently
 # randomly sampled to break correlation between consecutive updates, which increases the stability of the network
 class ReplayBuffer:
-    def __init__(self, capacity: int = 400_000):      # 4e5
+    def __init__(self, capacity: int = 400000):      # 4e5
         self.capacity = capacity
         self.buf = []
         self.pos = 0
 
     def __len__(self): return len(self.buf)
 
-    # Add a tuple of the experience to the buffer
-    def push(self, s, a_type, i, j, r, s_next, done):
-        tup = (s, int(a_type), int(i), int(j), float(r), s_next, bool(done))
-        if len(self.buf) < self.capacity:
-            self.buf.append(tup)
+    # Add experience to the buffer
+    def push(self, S1_feats, action, action_idx, reward, S2_feats, done):
+        print("Current length of buffer: ", len(self.buf))
+        print("Capacity of buffer: ", self.capacity)
+        
+        if (len(self.buf) + global_vars.batch_size) <= self.capacity:
+            for b in range(global_vars.batch_size):
+                buf_element = BufferElement(S1_feats[b], action[b], action_idx[b], reward[b], S2_feats[b], done)
+                self.buf.append(buf_element)
         else:
-            self.buf[self.pos] = tup
-        self.pos = (self.pos + 1) % self.capacity
+            raise ValueError("Buffer is full")
+
+        self.pos = (self.pos + global_vars.batch_size) % self.capacity
 
     # Sample a batch of experiences from the buffer
-    def sample(self, batch_size: int):
-        batch = random.sample(self.buf, batch_size)
-        s, a, i, j, r, s2, d = zip(*batch)
-        s  = torch.stack(s)        # (B,4,N,N)
-        s2 = torch.stack(s2)
-        a  = torch.tensor(a, dtype=torch.long, device=s.device)
-        i  = torch.tensor(i, dtype=torch.long, device=s.device)
-        j  = torch.tensor(j, dtype=torch.long, device=s.device)
-        r  = torch.tensor(r, dtype=torch.float32, device=s.device)
-        d  = torch.tensor(d, dtype=torch.float32, device=s.device)
-        return s, a, i, j, r, s2, d
+    def sample(self):
+        return random.sample(self.buf, global_vars.batch_size)
     
+def compute_reward(current_metrics, next_metrics, w_area, w_delay, c_area: float = 1e-3, c_delay: float = 10.0) -> float:
+    print("current_metrics: ", current_metrics)
+    print("next_metrics: ", next_metrics)
+    
+    diff_area = current_metrics[:,1] - next_metrics[:,1]
+    diff_delay = current_metrics[:,0] - next_metrics[:,0]
+    
+    return w_area*(c_area*diff_area) + w_delay*(c_delay*diff_delay)
+
 # Training parameters from the PrefixRL paper
 @dataclass
 class TrainingConfig:
     gamma: float = 0.75                      # paper
     lr: float = 4e-5                         # paper
     target_sync_every: int = 60              # paper
-    eps_start: float = 1.0
-    eps_end: float   = 0.0                   # paper says anneal to 0
-    eps_decay_steps: int = 200_000           # choose a schedule; paper doesn’t specify curve
-    batch_size: int = 128
-    steps: int = 200_000                     # toy; paper runs are much larger
-    w_area: float = 0.5                      # you can sweep per-agent
-    w_delay: float = 0.5
-    c_area: float = 1e-3                      # paper’s scaling
-    c_delay: float = 10.0
+    c_area: float = 1e-3                        # paper’s scaling
+    c_delay: float = 10.0                       # paper’s scaling
     
-# TODO: This was also vibe coded. There is scaffold code/placeholders where environment actions need to be taken
+    
 def train(cfg: TrainingConfig, device=None):
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -304,69 +391,135 @@ def train(cfg: TrainingConfig, device=None):
     tgt.load_state_dict(net.state_dict()); tgt.eval()
 
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr)
-    buf = ReplayBuffer(400_000) # Initialize replay buffer with 4e5 elements
+    buf = ReplayBuffer(400000) # Initialize replay buffer with 4e5 elements
 
-    eps = cfg.eps_start
-    eps_slope = (cfg.eps_end - cfg.eps_start) / max(cfg.eps_decay_steps, 1)
     grad_steps = 0
 
-    current_state = init_graph(global_vars.input_bitwidth, global_vars.initial_adder_type)
+    # Weight scalar for area and delay
+    w_area = global_vars.w_scalar
+    w_delay = 1 - global_vars.w_scalar
+    B = global_vars.batch_size
     
-    feats = build_features(init_state.nodelist, init_state.minlist, init_state.levellist, init_state.fanoutlist).to(device)   # (B,4,N,N) in [0,1]
-
     # Main training loop
-    # TODO: Starting with a batch size of 1, need to modify to handle batch size > 1
-    for step in range(1, cfg.steps+1):
-        # forward + mask
-        q = net(feats)
-        q = apply_action_masks(q, env.nodelist, env.minlist, env.all_mask, env.add_mask, env.del_mask)
-
-        action_masks = build_action_masks(args.input_bitwidth, init_state.nodelist, init_state.minlist)
-        q_masked = apply_action_masks(q, action_masks)
+    for episode in range(global_vars.num_episodes):
         
-        # TODO: ε-greedy on scalarized add/del (choose random actions with probability ε)
-        # if random.random() < eps:
-        #     best_action_idx, best_action = get_random_action(q_masked, w_area=cfg.w_area, w_delay=cfg.w_delay)
-        # else:
-        #     best_action_idx, best_action = get_best_action(q_masked, w_area=cfg.w_area, w_delay=cfg.w_delay)
-        best_action_idx, best_action = get_best_action(q_masked, w_area=cfg.w_area, w_delay=cfg.w_delay)
+        # Initial environment state at beginning of each episode
+        current_state = init_graph(global_vars.n, global_vars.initial_adder_type)
+        current_state.output_verilog()
+        current_state.output_nodelist()
+        current_state.run_yosys()
+        delay,area,power = current_state.run_openroad()
+        current_state_metrics = torch.tensor([delay, area, power]).repeat(B, 1)
+        current_states = [current_state] * B
+        
+        # Sample a new value for epsilon-greedy exploration (PrefixRL Section III B)
+        epsilon = sample_epsilon()
+        print("epsilon: ", epsilon)
+        
+        # Train for num_steps steps per episode
+        for step in tqdm(range(global_vars.num_steps), desc="Training steps"):
+            current_state_nodelist = torch.stack([torch.tensor(current_states[b].nodelist) for b in range(B)])
+            current_state_minlist = torch.stack([torch.tensor(current_states[b].minlist) for b in range(B)])
+            current_state_levellist = torch.stack([torch.tensor(current_states[b].levellist) for b in range(B)])
+            current_state_fanoutlist = torch.stack([torch.tensor(current_states[b].fanoutlist) for b in range(B)])
+            current_state_metrics = torch.stack([torch.tensor((current_states[b].delay, current_states[b].area, current_states[b].power)) for b in range(B)])
+                
+            feats = build_features(
+                current_state_nodelist, 
+                current_state_minlist, 
+                current_state_levellist, 
+                current_state_fanoutlist,
+                batch_size=B
+                ).to(device)   # (B,4,N,N) in [0,1]
 
-        # TODO: Currently, only supports batch size of 1. Need to modify to support batch size > 1
-        if (best_action.size(0) == 1):
-            action = best_action[0].item()
-            action_idx = best_action_idx[0].tolist()
-        else:
-            raise ValueError("TODO: edit program for batch size > 1")
+            q = net(feats)
             
-        next_state = init_state.get_next_state(action, action_idx)
+            # action_masks = build_action_masks(global_vars.n, current_state_nodelist, current_state_minlist)
+            # q_masked = apply_action_masks(q, action_masks)
+            
+            q_masked = build_and_apply_action_masks_batch(q, feats, global_vars.n)
+            q_scalarized = scalarize_q(q_masked, w_area, w_delay)
+            
+            # ε-greedy on scalarized add/del (choose random actions with probability ε)
+            # If step == 0, choose a random action to start the episode
+            rand_selection = torch.rand(1).item() < epsilon or step == 0
+            if rand_selection:
+                action_idx, action, value_per_batch = get_random_action(q_masked, w_area, w_delay)
+            else:
+                action_idx, action, value_per_batch = get_best_action(q_masked, w_area, w_delay)
+                
+            print("Shape of action_idx: ", action_idx.shape)
+            print("action_idx: ", action_idx)
+            print("Shape of action: ", action.shape)
+            print("action: ", action)
+            label = "rand" if rand_selection else "max"
+            print(f"Shape of {label}_per_batch: {value_per_batch.shape}")
+            print(f"{label}_per_batch: {value_per_batch}")
+            
+            # next_states is a list of B Graph_State objects
+            # TODO: this will be the bottleneck of training. Should be performed in parallel instead of sequentially
+            next_states = evaluate_next_state(current_states, action, action_idx[:,0], action_idx[:,1], B)
+            next_state_nodelist = torch.stack([torch.tensor(next_states[b].nodelist) for b in range(B)])
+            next_state_minlist = torch.stack([torch.tensor(next_states[b].minlist) for b in range(B)])
+            next_state_levellist = torch.stack([torch.tensor(next_states[b].levellist) for b in range(B)])
+            next_state_fanoutlist = torch.stack([torch.tensor(next_states[b].fanoutlist) for b in range(B)])
+            next_state_metrics = torch.stack([torch.tensor((next_states[b].delay, next_states[b].area, next_states[b].power)) for b in range(B)])
+            
+            reward = compute_reward(current_state_metrics, next_state_metrics, w_area, w_delay)
+            
+            # Build features for the next state (inputs are already batched)
+            next_feats = build_features(
+                next_state_nodelist, 
+                next_state_minlist, 
+                next_state_levellist, 
+                next_state_fanoutlist
+                ).to(device)   # (B,4,N,N) in [0,1]
+            
+            q_next = net(next_feats)
+            
+            q_next_masked = build_and_apply_action_masks_batch(q_next, next_feats, global_vars.n)
+            q_next_scalarized = scalarize_q(q_next_masked, w_area, w_delay)
+            
+            # print("Shape of feats: ", feats.shape)
+            # print("feats: ", feats)
+            # print("Shape of next_feats: ", next_feats.shape)
+            # print("next_feats: ", next_feats)
 
-        reward = (current_state.area-next_state.area, current_state.delay-next_state.delay)
-        
-        # reward scalarization per paper (scale raw metrics, then use w)
-        # reward is difference between w-optimal points; here, a simple surrogate:
-        reward = -(cfg.carea*raw_area + cfg.cdelay*raw_delay)
-
-        feats2 = env.features().to(device)
-        buf.push(feats.detach(), a_type, i, j, reward, feats2.detach(), done)
-
-        # learning
-        if len(buf) >= cfg.batch_size:
-            S, A, I, J, R, S2, D = buf.sample(cfg.batch_size)  # shapes (B,...)
-            S  = S.to(device);  S2 = S2.to(device)
-            # current Q(s,a)
-            q_curr = scalarize_q(apply_action_masks(net(S),  env.nodelist, env.minlist, env.all_mask, env.add_mask, env.del_mask),
-                                 cfg.w_area, cfg.w_delay)     # (B,2,N,N)
-            B = S.size(0); batch = torch.arange(B, device=device)
-            q_sa = q_curr[batch, A, I, J]                     # (B,)
-
-            # target: r + γ max_{a',i',j'} Q_tgt(s',a')
+            # Push the current state, taken action, node index, reward, and next_state to the replay buffer
+            buf.push(feats.detach(), action.detach(), action_idx.detach(), reward.detach(), next_feats.detach(), False)
+            
+            # Sample experience buffer
+            sampled_elements = buf.sample()  # shapes (B,...)
+            print("Shape of sampled_elements: ", len(sampled_elements))
+            # print("sampled_elements: ", sampled_elements)
+            
+            # Q(s) from online network - needs gradients
+            replay_S1_feats = torch.stack([elem.S1_feats for elem in sampled_elements])
+            replay_action = torch.stack([elem.action for elem in sampled_elements])
+            replay_action_idx = torch.stack([elem.action_idx for elem in sampled_elements])
+            replay_reward = torch.stack([elem.reward for elem in sampled_elements])
+            replay_S2_feats = torch.stack([elem.S2_feats for elem in sampled_elements])
+            replay_done = torch.stack([torch.tensor(elem.done, dtype=torch.float32) for elem in sampled_elements])
+            
+            # Recompute Q(S1) from online network (with gradients)
+            Q_S1 = net(replay_S1_feats)
+            q_S1_masked = build_and_apply_action_masks_batch(Q_S1, replay_S1_feats, global_vars.n)
+            Q_S1_scalarized = scalarize_q(q_S1_masked, w_area, w_delay)
+            
+            B = Q_S1_scalarized.size(0)
+            batch_idx = torch.arange(B, device=Q_S1_scalarized.device)
+            replay_action_type = (~replay_action).long()  # 0 for add, 1 for delete
+            
+            replay_q_sa = Q_S1_scalarized[batch_idx, replay_action_type, replay_action_idx[:, 0], replay_action_idx[:, 1]]
+            
+            # Q(s',a') from target network - no gradients needed
             with torch.no_grad():
-                q_next = scalarize_q(apply_action_masks(tgt(S2), env.nodelist, env.minlist, env.all_mask, env.add_mask, env.del_mask),
-                                     cfg.w_area, cfg.w_delay) # (B,2,N,N)
-                qn_max = q_next.view(B, -1).max(dim=1).values
-                target = R + cfg.gamma * (1.0 - D) * qn_max
+                Q_S2 = tgt(replay_S2_feats)
+                q_S2_masked = build_and_apply_action_masks_batch(Q_S2, replay_S2_feats, global_vars.n)
+                action_coords, is_add, replay_q_max_per_batch = get_best_action(q_S2_masked, w_area, w_delay)
+                target = replay_reward + cfg.gamma * replay_q_max_per_batch
 
-            loss = F.smooth_l1_loss(q_sa, target)
+            loss = F.smooth_l1_loss(replay_q_sa, target)
 
             opt.zero_grad()
             loss.backward()
@@ -374,15 +527,13 @@ def train(cfg: TrainingConfig, device=None):
             opt.step()
 
             grad_steps += 1
+            
+            # Sync the target network with the online network every 60 steps
             if grad_steps % cfg.target_sync_every == 0:       # every 60 steps
                 tgt.load_state_dict(net.state_dict())
-
-        feats = feats2
-        eps = max(cfg.eps_end, eps + eps_slope)
-
-        if done:
-            env.reset()
-            feats = env.features().to(device)
+                
+            current_states = next_states
+            current_state_metrics = next_state_metrics
 
     return net, tgt
     

@@ -1,7 +1,20 @@
+### Global Variable Declarations ###
 flog = ""
 start_time = {}
 initial_adder_type = None
+result_cache = {}
+cache_hit = 0
+step_count = 1666
+openroad_path = "OpenROAD/prefix-flow/"
+output_dir = "out/"
+save_verilog = False
+n = 8
+num_steps = 5000
+num_episodes = 100
+w_scalar = 0.5
+batch_size = 192
 
+### Verilog Cell Definitions ###
 BLACK_CELL = '''module BLACK (
 \tinput gik, pik, gkj, pkj,
 \toutput gij, pij
@@ -19,6 +32,7 @@ assign gij = gik | (pik & gkj);
 endmodule
 '''
 
+### Script Definitions ###
 yosys_script_format = \
 '''read -sv {}
 hierarchy -top adder_top
@@ -47,16 +61,3 @@ set die_area {{0 0 80 80}}
 set core_area {{0 0 80 80}}
 source -echo "fast_flow.tcl"
 '''
-
-# VERILOG_OUTPUT_LOCATION = "run_verilog_mid"
-# NODElIST_OUTPUT_LOCATION = "nodelist"
-# YOSYS_OUTPUT_LOCATION = "yosys"
-# OPENROAD_OUTPUT_LOCATION = "openroad"
-
-result_cache = {}
-cache_hit = 0
-step_count = 1666
-openroad_path = "OpenROAD/prefix-flow/"
-output_dir = "out/"
-save_verilog = False
-n = 8
