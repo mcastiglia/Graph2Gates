@@ -195,7 +195,7 @@ def build_action_masks(N: int, nodelist: np.ndarray, minlist: np.ndarray) -> Dic
     return masks
 
 # Apply action masks to the Q-maps (Adapted from PrefixRL Section C)
-def apply_action_masks(qmaps: torch.Tensor, masks: Dict[str, torch.Tensor], fill_value: float = -1e9) -> torch.Tensor:
+def apply_action_masks(qmaps: torch.Tensor, masks: Dict[str, torch.Tensor], fill_value: float = -torch.inf) -> torch.Tensor:
     assert qmaps.dim() == 4 and qmaps.size(1) == 4, "Expected (B,4,N,N)"
     B, _, N, M = qmaps.shape
     assert N == M, "Expected square maps (N==N)."
@@ -297,7 +297,7 @@ def sample_epsilon():
     return eps
 
 # Select a random action from the scalarized Q-values
-def get_random_action(qmaps: torch.Tensor, w_area, w_delay, fill_value: float = -1e9):
+def get_random_action(qmaps: torch.Tensor, w_area, w_delay, fill_value: float = -torch.inf):
     
     scores = scalarize_q(qmaps, w_area, w_delay)  # (B,2,N,N)
     
