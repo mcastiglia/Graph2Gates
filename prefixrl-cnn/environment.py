@@ -380,8 +380,6 @@ def evaluate_job(args):
   
   with _lock:
     print(f"[Batch {b}] Finished evaluation: {next_state.verilog_file_name}")
-    global_vars.flog.write(f"Finished Job {b}: {next_state.verilog_file_name}\n")
-    global_vars.flog.flush()
   
   return next_state
     
