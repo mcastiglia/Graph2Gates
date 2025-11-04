@@ -43,7 +43,7 @@ abc -fast -liberty {}NangateOpenCellLibrary_typical.lib
 write_verilog {}
 '''
 
-CLOCK_PERIOD_TARGET = 3.0
+CLOCK_PERIOD_TARGET = 0
 
 sdc_format = \
 f'''create_clock [get_ports clk] -name core_clock -period {CLOCK_PERIOD_TARGET}
@@ -60,5 +60,6 @@ set synth_verilog "{}"
 set sdc_file "{}"
 set die_area {{0 0 80 80}}
 set core_area {{0 0 80 80}}
-source -echo "fast_flow.tcl"
+source -echo "{}.tcl"
 '''
+flow_type = "fast_flow"
