@@ -336,7 +336,15 @@ class Graph_State(object):
         fopen = open(yosys_script_file_name, "w")
         fopen.write(global_vars.yosys_script_format.format(src_file_path, global_vars.openroad_path, dst_file_name))
         fopen.close()
-        _ = subprocess.check_output(["yosys {}".format(yosys_script_file_name)], shell= True)
+        try:
+            _ = subprocess.check_output(
+                ["yosys {}".format(yosys_script_file_name)], 
+                shell=True,
+                timeout=300,
+                stderr=subprocess.STDOUT
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Yosys timed out after 300 seconds for {yosys_script_file_name}")
         if not global_vars.save_verilog:
             os.remove(src_file_path)
     
@@ -379,15 +387,29 @@ class Graph_State(object):
         command = "openroad {}".format(tcl_script)
     
         # print("COMMAND: {}".format(command))
-        output = subprocess.check_output(['openroad',
-            "{}adder_nangate45_{}.tcl".format("", file_name_prefix)], 
-            cwd=global_vars.openroad_path).decode('utf-8')
+        try:
+            output = subprocess.check_output(
+                ['openroad', "{}adder_nangate45_{}.tcl".format("", file_name_prefix)], 
+                cwd=global_vars.openroad_path,
+                timeout=600,
+                stderr=subprocess.STDOUT
+            ).decode('utf-8')
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"OpenROAD timed out after 600 seconds for {file_name_prefix}")
+        
         note = None
         retry = 0
         area, wslack, power, note = self.extract_results(output)
         while note is None and retry < 3:
-            output = subprocess.check_output(['openroad', tcl_script], 
-            cwd=global_vars.openroad_path).decode('utf-8')
+            try:
+                output = subprocess.check_output(
+                    ['openroad', tcl_script], 
+                    cwd=global_vars.openroad_path,
+                    timeout=600,
+                    stderr=subprocess.STDOUT
+                ).decode('utf-8')
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"OpenROAD retry {retry+1} timed out after 600 seconds for {file_name_prefix}")
             area, wslack, power, note = self.extract_results(output)
             retry += 1
         if os.path.exists(yosys_file_name):
@@ -418,9 +440,9 @@ class Graph_State(object):
         power = 0.0
         note = None
         for line in lines:
-            print(line)
             if not line.startswith("result:") and not line.startswith("Total"):
                 continue
+            print(line, flush=True)
             if "design_area" in line:
                 area = float(line.split(" = ")[-1])
             elif "worst_slack" in line:
@@ -435,7 +457,7 @@ class Graph_State(object):
 def evaluate_job(args):
   b, current_states, best_action, action_x, action_y = args
   
-  print(f"[Batch {b}] Starting evaluation")
+#   print(f"[Batch {b}] Starting evaluation")
   
   action_type = best_action[b].item()
   x = action_x[b].item()
@@ -443,8 +465,8 @@ def evaluate_job(args):
   
   next_state = current_states[b].evaluate_next_state(action_type, x, y, b)
   
-  with _lock:
-    print(f"[Batch {b}] Finished evaluation: {next_state.verilog_file_name}")
+#   with _lock:
+#     print(f"[Batch {b}] Finished evaluation: {next_state.verilog_file_name}")
   
 #   return next_state
     
@@ -464,7 +486,11 @@ def evaluate_next_state_sequential(current_states: List[Graph_State], best_actio
     
 def evaluate_next_state_parallel(current_states: List["Graph_State"], best_action: torch.Tensor, action_x: torch.Tensor, action_y: torch.Tensor, batch_size: int):
 
-  args = [(b, current_states, best_action, action_x, action_y) for b in range (batch_size)]
+  action_type_list = [best_action[b].item() for b in range(batch_size)]
+  x_list = [action_x[b].item() for b in range(batch_size)]
+  y_list = [action_y[b].item() for b in range(batch_size)]
+  
+  args = [(b, current_states, action_type_list[b], x_list[b], y_list[b]) for b in range(batch_size)]
 
   num_workers = max(1, min(os.cpu_count() - 1, batch_size))
   print(f"Starting evaluation with {num_workers} worker(s) for {batch_size} batch elements...")

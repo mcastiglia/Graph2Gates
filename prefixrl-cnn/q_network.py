@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import global_vars
 from init_states import init_graph
 from environment import evaluate_next_state_batch
+from training_timer import TrainingTimer
 from tqdm import tqdm
 import time
     
@@ -121,14 +122,16 @@ def build_features(
         if batch_size is not None and B != batch_size:
             raise ValueError(f"Batch size mismatch: input has {B} elements but batch_size={batch_size}")
         
-        normalized_levellist = np.zeros_like(levellist, dtype=np.float32)
-        normalized_fanoutlist = np.zeros_like(fanoutlist, dtype=np.float32)
+        levellist_flat = levellist.reshape(B, -1)
+        fanoutlist_flat = fanoutlist.reshape(B, -1)
         
-        for b in range(B):
-            levellist_max = levellist[b].max() if levellist[b].size > 0 else 1.0
-            fanoutlist_max = fanoutlist[b].max() if fanoutlist[b].size > 0 else 1.0
-            normalized_levellist[b] = normalize_features(levellist[b], levellist_max)
-            normalized_fanoutlist[b] = normalize_features(fanoutlist[b], fanoutlist_max)
+        levellist_maxes = np.max(levellist_flat, axis=1, keepdims=True)
+        levellist_maxes = np.maximum(levellist_maxes, 1.0).reshape(B, 1, 1)
+        fanoutlist_maxes = np.max(fanoutlist_flat, axis=1, keepdims=True)
+        fanoutlist_maxes = np.maximum(fanoutlist_maxes, 1.0).reshape(B, 1, 1)
+        
+        normalized_levellist = np.clip(levellist.astype(np.float32) / (levellist_maxes + 1e-8), 0.0, 1.0)
+        normalized_fanoutlist = np.clip(fanoutlist.astype(np.float32) / (fanoutlist_maxes + 1e-8), 0.0, 1.0)
         
         arr = np.stack([nodelist, minlist, normalized_levellist, normalized_fanoutlist], axis=1)
     else:
@@ -385,7 +388,6 @@ def compute_reward(current_metrics, next_metrics, w_area, w_delay, c_area: float
     
     return w_area*(c_area*diff_area) + w_delay*(c_delay*diff_delay)
 
-# Training parameters from the PrefixRL paper
 @dataclass
 class TrainingConfig:
     gamma: float = 0.75                      # paper
@@ -418,10 +420,15 @@ def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]
     w_delay = global_vars.w_scalar
     B = global_vars.batch_size
     
+    # Initialize time tracking
+    timer = TrainingTimer(global_vars.num_episodes, global_vars.num_steps)
+    
     # Main training loop
     for episode in range(global_vars.num_episodes):
+        timer.start_episode(episode)
         
         # Initial environment state at beginning of each episode
+        timer.start_init()
         current_state = init_graph(global_vars.n, global_vars.initial_adder_type)
         current_state.output_verilog()
         current_state.output_feature_list("nodelist", current_state.nodelist)
@@ -432,18 +439,21 @@ def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]
         delay,area,power = current_state.run_openroad()
         current_state_metrics = torch.tensor([delay, area, power]).repeat(B, 1)
         current_states = [current_state] * B
+        init_time = timer.end_init()
         
         # Sample a new value for epsilon-greedy exploration (PrefixRL Section III B)
         epsilon = sample_epsilon(episode)
         # print("epsilon: ", epsilon)
         
         # Train for num_steps steps per episode
-        for step in tqdm(range(global_vars.num_steps), desc="Training steps"):
-            current_state_nodelist = torch.stack([torch.tensor(current_states[b].nodelist) for b in range(B)])
-            current_state_minlist = torch.stack([torch.tensor(current_states[b].minlist) for b in range(B)])
-            current_state_levellist = torch.stack([torch.tensor(current_states[b].levellist) for b in range(B)])
-            current_state_fanoutlist = torch.stack([torch.tensor(current_states[b].fanoutlist) for b in range(B)])
-            current_state_metrics = torch.stack([torch.tensor((current_states[b].delay, current_states[b].area, current_states[b].power)) for b in range(B)])
+        timer.start_step()
+        pbar = tqdm(range(global_vars.num_steps), desc=f"Episode {episode+1}/{global_vars.num_episodes}")
+        for step in pbar:
+            current_state_nodelist = torch.from_numpy(np.array([current_states[b].nodelist for b in range(B)]))
+            current_state_minlist = torch.from_numpy(np.array([current_states[b].minlist for b in range(B)]))
+            current_state_levellist = torch.from_numpy(np.array([current_states[b].levellist for b in range(B)]))
+            current_state_fanoutlist = torch.from_numpy(np.array([current_states[b].fanoutlist for b in range(B)]))
+            current_state_metrics = torch.from_numpy(np.array([[current_states[b].delay, current_states[b].area, current_states[b].power] for b in range(B)]))
                 
             feats = build_features(
                 current_state_nodelist, 
@@ -480,11 +490,11 @@ def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]
             # next_states is a list of B Graph_State objects
             # TODO: this will be the bottleneck of training. Should be performed in parallel instead of sequentially
             next_states = evaluate_next_state_batch(current_states, action, action_idx[:,0], action_idx[:,1], B)
-            next_state_nodelist = torch.stack([torch.tensor(next_states[b].nodelist) for b in range(B)])
-            next_state_minlist = torch.stack([torch.tensor(next_states[b].minlist) for b in range(B)])
-            next_state_levellist = torch.stack([torch.tensor(next_states[b].levellist) for b in range(B)])
-            next_state_fanoutlist = torch.stack([torch.tensor(next_states[b].fanoutlist) for b in range(B)])
-            next_state_metrics = torch.stack([torch.tensor((next_states[b].delay, next_states[b].area, next_states[b].power)) for b in range(B)])
+            next_state_nodelist = torch.from_numpy(np.array([next_states[b].nodelist for b in range(B)]))
+            next_state_minlist = torch.from_numpy(np.array([next_states[b].minlist for b in range(B)]))
+            next_state_levellist = torch.from_numpy(np.array([next_states[b].levellist for b in range(B)]))
+            next_state_fanoutlist = torch.from_numpy(np.array([next_states[b].fanoutlist for b in range(B)]))
+            next_state_metrics = torch.from_numpy(np.array([[next_states[b].delay, next_states[b].area, next_states[b].power] for b in range(B)]))
             
             reward = compute_reward(current_state_metrics, next_state_metrics, w_area, w_delay)
             
@@ -556,9 +566,8 @@ def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]
             current_states = next_states
             current_state_metrics = next_state_metrics
             
-            training_log_entry = ""
-            for b in range(B):
-                training_log_entry += "{},{},{},{},{},{},{},{},{},{},{}\n".format(
+            log_lines = [
+                "{},{},{},{},{},{},{},{},{},{},{}\n".format(
                     time.time(),
                     episode,
                     step,
@@ -571,10 +580,19 @@ def train(cfg: TrainingConfig, device=None) -> Tuple[PrefixRL_DQN, PrefixRL_DQN]
                     replay_q_max_per_batch[b].item(),
                     loss.item()
                 )
-            global_vars.training_log.write(training_log_entry)
+                for b in range(B)
+            ]
+            global_vars.training_log.write(''.join(log_lines))
             global_vars.training_log.flush()
+            
+            timer.end_step(step, pbar)
 
+        episode_time, estimates = timer.end_episode(init_time)
+        timer.print_episode_summary(episode, episode_time, init_time, estimates)
+        
         scheduler.step()
+
+    timer.print_final_summary()
 
     return net, tgt
     
