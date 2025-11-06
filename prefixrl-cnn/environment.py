@@ -485,12 +485,7 @@ def evaluate_next_state_sequential(current_states: List[Graph_State], best_actio
     return next_states
     
 def evaluate_next_state_parallel(current_states: List["Graph_State"], best_action: torch.Tensor, action_x: torch.Tensor, action_y: torch.Tensor, batch_size: int):
-
-  action_type_list = [best_action[b].item() for b in range(batch_size)]
-  x_list = [action_x[b].item() for b in range(batch_size)]
-  y_list = [action_y[b].item() for b in range(batch_size)]
-  
-  args = [(b, current_states, action_type_list[b], x_list[b], y_list[b]) for b in range(batch_size)]
+  args = [(b, current_states, best_action, action_x, action_y) for b in range (batch_size)]
 
   num_workers = max(1, min(os.cpu_count() - 1, batch_size))
   print(f"Starting evaluation with {num_workers} worker(s) for {batch_size} batch elements...")
