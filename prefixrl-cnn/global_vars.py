@@ -34,7 +34,7 @@ assign gij = gik | (pik & gkj);
 endmodule
 '''
 
-### Script Definitions ###
+## Script Definitions ###
 yosys_script_format = \
 '''read -sv {}
 hierarchy -top adder_top

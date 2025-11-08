@@ -11,7 +11,7 @@ def parse_arguments():
     
     parser = argparse.ArgumentParser(description='Prefix graph to adder netlist conversion tool')
     parser.add_argument('-n','--input_bitwidth', type = int, required=True, help="Input bitwidth for the adder")
-    parser.add_argument('--adder_type', type = int, required=True, help="Initial starting state for prefix graph (0: serial, 1: sklansky, 2: brent-kung)")
+    parser.add_argument('--adder_type', type = int, default=0, help="Initial starting state for prefix graph (0: serial, 1: sklansky, 2: brent-kung)")
     parser.add_argument('-b', '--batch_size', type = int, default = 192, help="Batch size for RL training")
     parser.add_argument('--num_steps', type = int, default = 5000, help="Number of training steps per episode")
     parser.add_argument('--num_episodes', type = int, default = 100, help="Number of training episodes")

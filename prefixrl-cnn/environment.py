@@ -71,20 +71,19 @@ class Graph_State(object):
         
         return next_nodelist, next_minlist, next_levellist
     
-    # Algorithm 1 (Legalize) from PrefixRL
-    def legalize(self, nodelist, minlist):
-        minlist = copy.deepcopy(nodelist)
+    def legalize(self, cell_map, min_map):
+        min_map = copy.deepcopy(cell_map)
         for i in range(self.n):
-            minlist[i, 0] = 0
-            minlist[i, i] = 0
-        for m in range(self.n-1, 0, -1):
-            prev_l = m
-            for l in range(m-1, -1, -1):
-                if nodelist[m, l] == 1:
-                    nodelist[prev_l-1, l] = 1
-                    minlist[prev_l-1, l] = 0
-                    prev_l = l
-        return nodelist, minlist
+            min_map[i, 0] = 0
+            min_map[i, i] = 0
+        for x in range(self.n-1, 0, -1):
+            last_y = x
+            for y in range(x-1, -1, -1):
+                if cell_map[x, y] == 1:
+                    cell_map[last_y-1, y] = 1
+                    min_map[last_y-1, y] = 0
+                    last_y = y
+        return cell_map, min_map
 
     # Update levellist based on changes to nodelist (Taken from ArithTreeRL)
     def update_levellist(self, nodelist, levellist):
@@ -98,7 +97,7 @@ class Graph_State(object):
                     levellist[m, l] = max(levellist[m, prev_l], levellist[prev_l-1, l])+ 1
                     prev_l = l
         return levellist
-
+                    
     # Update fanoutlist based on changes to nodelist (Taken from ArithTreeRL)
     def update_fanoutlist(self):
         self.fanoutlist.fill(0)
@@ -326,6 +325,7 @@ class Graph_State(object):
         file_name_prefix = self.verilog_file_name.split(".")[0] + "_yosys"
         if os.path.exists(dst_file_name):
             return
+        #     # os.remove(dst_file_name)
         src_file_path = os.path.join(global_vars.output_dir, "run_verilog_mid", self.verilog_file_name)
 
         yosys_script_dir = os.path.join(global_vars.output_dir, "run_yosys_script")
@@ -335,19 +335,29 @@ class Graph_State(object):
             "{}.ys".format(file_name_prefix))
         fopen = open(yosys_script_file_name, "w")
         fopen.write(global_vars.yosys_script_format.format(src_file_path, global_vars.openroad_path, dst_file_name))
+        # print_stat_command = global_vars.PRINT_STAT_COMMAND.format(global_vars.openroad_path)
+        # fopen.write(global_vars.yosys_script_format.format(src_file_path, global_vars.YOSYS_OPTIMIZATION_EFFORT, global_vars.openroad_path, print_stat_command, dst_file_name))
         fopen.close()
         try:
-            _ = subprocess.check_output(
+            output = subprocess.check_output(
                 ["yosys {}".format(yosys_script_file_name)], 
                 shell=True,
                 timeout=300,
-                stderr=subprocess.STDOUT
-            )
+                stderr=subprocess.STDOUT,
+            ).decode("utf-8")
+            # print(output, flush=True)
+            # for output_line in output.split("\n"):
+            #     if "Chip area" in output_line:
+            #         print(output_line, flush=True)
+            #         break
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"Yosys timed out after 300 seconds for {yosys_script_file_name}")
+        except subprocess.CalledProcessError as e:
+            print("Yosys error: ", e.output, flush=True)
+            raise RuntimeError(f"Yosys failed for {yosys_script_file_name}")
         if not global_vars.save_verilog:
             os.remove(src_file_path)
-    
+            
     # Run OpenROAD to perform place and route on the synthesized Verilog code (Taken from ArithTreeRL)
     def run_openroad(self, batch_idx: int = 0):
 

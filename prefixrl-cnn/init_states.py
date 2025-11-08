@@ -101,7 +101,6 @@ def init_graph_brent_kung(n: int):
         minlist[i, i] = 0
         minlist[i, 0] = 0
     size = nodelist.sum() - n
-    print("BK level ={}, size = {}".format(levellist.max(), nodelist.sum()-n))
     state = Graph_State(level, n, size, nodelist, levellist, minlist, 0)
     state.update_fanoutlist()
     return state
