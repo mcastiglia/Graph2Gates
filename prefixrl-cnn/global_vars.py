@@ -15,6 +15,7 @@ num_episodes = 100
 w_scalar = 0.5
 batch_size = 192
 disable_parallel_evaluation = False
+use_analytic_model = False
 
 ### Verilog Cell Definitions ###
 BLACK_CELL = '''module BLACK (

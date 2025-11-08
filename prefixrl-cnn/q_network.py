@@ -380,10 +380,7 @@ class ReplayBuffer:
     def sample(self) -> List[BufferElement]:
         return random.sample(self.buf, global_vars.batch_size)
     
-def compute_reward(current_metrics, next_metrics, w_area, w_delay, c_area: float = 1e-3, c_delay: float = 10.0) -> float:
-    # print("current_metrics: ", current_metrics)
-    # print("next_metrics: ", next_metrics)
-    
+def compute_reward(current_metrics, next_metrics, w_area, w_delay, c_area, c_delay) -> float:
     diff_area = current_metrics[:,1] - next_metrics[:,1]
     diff_delay = current_metrics[:,0] - next_metrics[:,0]
     
@@ -406,7 +403,6 @@ def train(cfg: TrainingConfig, restore_from=None, device=None) -> Tuple[PrefixRL
     start_episode = 0
     start_step = 0
 
-    # TODO: PrefixRL uses a double DQN architecture, where there is an online network (net) and an offline network (tgt)
     # Network actual being trained each step (also called online/policy network)
     net = PrefixRL_DQN(blocks=32, width=256).to(device)  # paper
     
@@ -444,15 +440,21 @@ def train(cfg: TrainingConfig, restore_from=None, device=None) -> Tuple[PrefixRL
         
         # Initial environment state at beginning of each episode
         timer.start_init()
-        current_state = init_graph(global_vars.n, global_vars.initial_adder_type)
+        current_state = init_graph(global_vars.n, episode % 2)
         current_state.output_verilog()
         current_state.output_feature_list("nodelist", current_state.nodelist)
         current_state.output_feature_list("levellist", current_state.levellist)
         current_state.output_feature_list("minlist", current_state.minlist)
         current_state.output_feature_list("fanoutlist", current_state.fanoutlist)
-        current_state.run_yosys()
-        delay,area,power = current_state.run_openroad()
-        current_state_metrics = torch.tensor([delay, area, power]).repeat(B, 1)
+        
+        if not global_vars.use_analytic_model:
+            current_state.run_yosys()
+            delay,area,power = current_state.run_openroad()
+            current_state_metrics = torch.tensor([delay, area]).repeat(B, 1)
+        else:
+            current_state.compute_critical_path_delay()
+            current_state_metrics = torch.tensor([current_state.analytic_delay, current_state.size]).repeat(B, 1)
+            
         current_states = [current_state] * B
         init_time = timer.end_init()
         
@@ -469,7 +471,11 @@ def train(cfg: TrainingConfig, restore_from=None, device=None) -> Tuple[PrefixRL
             current_state_minlist = torch.from_numpy(np.array([current_states[b].minlist for b in range(B)]))
             current_state_levellist = torch.from_numpy(np.array([current_states[b].levellist for b in range(B)]))
             current_state_fanoutlist = torch.from_numpy(np.array([current_states[b].fanoutlist for b in range(B)]))
-            current_state_metrics = torch.from_numpy(np.array([[current_states[b].delay, current_states[b].area, current_states[b].power] for b in range(B)]))
+            
+            if not global_vars.use_analytic_model:
+                current_state_metrics = torch.from_numpy(np.array([[current_states[b].delay, current_states[b].area] for b in range(B)]))
+            else:
+                current_state_metrics = torch.from_numpy(np.array([[current_states[b].analytic_delay, current_states[b].size] for b in range(B)]))
                 
             feats = build_features(
                 current_state_nodelist, 
@@ -510,9 +516,15 @@ def train(cfg: TrainingConfig, restore_from=None, device=None) -> Tuple[PrefixRL
             next_state_minlist = torch.from_numpy(np.array([next_states[b].minlist for b in range(B)]))
             next_state_levellist = torch.from_numpy(np.array([next_states[b].levellist for b in range(B)]))
             next_state_fanoutlist = torch.from_numpy(np.array([next_states[b].fanoutlist for b in range(B)]))
-            next_state_metrics = torch.from_numpy(np.array([[next_states[b].delay, next_states[b].area, next_states[b].power] for b in range(B)]))
             
-            reward = compute_reward(current_state_metrics, next_state_metrics, w_area, w_delay)
+            if not global_vars.use_analytic_model:
+                next_state_metrics = torch.from_numpy(np.array([[next_states[b].delay, next_states[b].area] for b in range(B)]))
+                reward = compute_reward(current_state_metrics, next_state_metrics, w_area, w_delay, cfg.c_area, cfg.c_delay)
+            else:
+                next_state_metrics = torch.from_numpy(np.array([[next_states[b].analytic_delay, next_states[b].size] for b in range(B)]))
+                reward = compute_reward(current_state_metrics, next_state_metrics, w_area, w_delay, 1.0, 1.0)
+            
+            
             reward = reward.to(device)
             
             # Build features for the next state (inputs are already batched)

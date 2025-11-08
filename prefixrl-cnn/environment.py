@@ -27,6 +27,7 @@ class Graph_State(object):
         self.minlist = minlist
         self.size = size
         self.delay = None
+        self.analytic_delay = None
         self.area = None
         self.level_bound_delta = level_bound_delta
         self.level_bound = int(math.log2(n) + 1 + level_bound_delta)
@@ -123,27 +124,110 @@ class Graph_State(object):
         next_state = Graph_State(next_level, self.n, next_size, next_nodelist,
             next_levellist, next_minlist, self.level_bound_delta)
         
-        next_state.output_verilog()
-        next_state.run_yosys()
-        delay, area, power = next_state.run_openroad(batch_idx)
-
-        next_state.delay = delay
-        next_state.area = area
-        next_state.power = power
         next_state.update_fanoutlist()
         fanout = next_state.fanoutlist.max()
-    
-        global_vars.synthesis_log.write("{},{:.2f},{:.2f},{:.2f},{:d},{:d},{:d},{:d},{:.2f}\n".format(
-                next_state.verilog_file_name.split(".")[0], 
-                next_state.delay, next_state.area, next_state.power, 
-                int(next_state.level), int(next_state.size), fanout,
-                global_vars.cache_hit,time.time() - start_time))
-        global_vars.synthesis_log.flush()
+        next_state.level = next_state.levellist.max()
+        next_state.output_verilog()
         
+        # Perform synthesis and PnR if not using analytic model
+        if not global_vars.use_analytic_model:
+            next_state.run_yosys()
+            delay, area, power = next_state.run_openroad(batch_idx)
+
+            next_state.delay = delay
+            next_state.area = area
+            next_state.power = power
+        
+            global_vars.synthesis_log.write("{},{:.2f},{:.2f},{:.2f},{:d},{:d},{:d},{:d},{:.2f}\n".format(
+                    next_state.verilog_file_name.split(".")[0], 
+                    next_state.delay, next_state.area, next_state.power, 
+                    int(next_state.level), int(next_state.size), fanout,
+                    global_vars.cache_hit,time.time() - start_time))
+            global_vars.synthesis_log.flush()
+        else:
+            next_state.compute_critical_path_delay()
+            global_vars.synthesis_log.write("{},{:.2f},{:.2f},{:.2f},{:d},{:d},{:d},{:d},{:.2f}\n".format(
+                    next_state.verilog_file_name.split(".")[0], 
+                    next_state.analytic_delay, int(next_state.size), 0, 
+                    int(next_state.level), int(next_state.size), fanout,
+                    global_vars.cache_hit,time.time() - start_time))
+            global_vars.synthesis_log.flush()
+            
         return next_state
     
     # return best_next_state
   
+    """
+    Compute the critical path delay of the adder
+    Start by finding all node coordinates with a maximum number of levels
+    Then do a depth-first search of each path
+    For each search, keep a running total of the cumulative fanout
+    
+    delay_total = internal_delay + driving_delay + final_xor_delay, 
+    internal_delay = max_levels * (2 * D_I), D_I = 1.0
+    driving_delay = D_0 * sum(fanouts of all nodes on the critical path), D_0 = 0.5
+    final_xor_delay = 1.0
+    
+    Example: 32-bit Kogge-Stone adder
+    max_levels = log2(32) = 5
+    internal_delay = 5 * (2 * 1.0) = 10.0
+    driving_delay = 0.5 * (2+2+2+2+1) = 4.5
+    final_xor_delay = 1.0
+    delay_total = 10.0 + 4.5 + 1.0 = 15.5
+    """
+    def compute_critical_path_delay(self, D_I: float = 1.0, D_0: float = 0.5):
+        max_levels = int(self.levellist.max())
+        internal_delay = max_levels * (2 * D_I)
+        final_xor_delay = 1.0
+        n = self.n
+        # Ensure fanoutlist matches current nodelist
+        self.update_fanoutlist()
+        # Helper to find lower parent of a node (x, y)
+        def find_lower_parent(x: int, y: int):
+            last_y = x
+            for y_above in range(x-1, y, -1):
+                if self.nodelist[x, y_above] == 1:
+                    last_y = y_above
+                    break
+            lp_x = last_y - 1
+            if lp_x < 0:
+                return None
+            if self.nodelist[lp_x, y] != 1:
+                return None
+            return (lp_x, y)
+        # Gather all max-level nodes
+        sinks = []
+        for i in range(n):
+            for j in range(n):
+                if self.nodelist[i, j] == 1 and int(self.levellist[i, j]) == max_levels:
+                    sinks.append((i, j))
+        if not sinks:
+            return final_xor_delay
+        # Traverse lower-parent chains and sum fanouts along the chain
+        best_total_fanout = 0
+        for sx, sy in sinks:
+            total_fanout = 0
+            current = (sx, sy)
+            # Move down until reaching level 1
+            while True:
+                lp = find_lower_parent(current[0], current[1])
+                if lp is None:
+                    break
+                lp_level = int(self.levellist[lp[0], lp[1]])
+                total_fanout += int(self.fanoutlist[lp[0], lp[1]])
+                if lp_level <= 1:
+                    break
+                current = lp
+            if total_fanout > best_total_fanout:
+                best_total_fanout = total_fanout
+        driving_delay = D_0 * best_total_fanout
+        delay_total = internal_delay + driving_delay + final_xor_delay
+        
+        # print("Total analytic delay: ", delay_total)
+        self.analytic_delay = delay_total
+        return delay_total
+        
+        
     # Output the nodelist as ASCIIart to a file (Taken from ArithTreeRL)
     def output_feature_list(self, feature_name, feature_list):
         featurelist_dir = os.path.join(global_vars.output_dir, "graph_feature_lists")
@@ -452,7 +536,7 @@ class Graph_State(object):
         for line in lines:
             if not line.startswith("result:") and not line.startswith("Total"):
                 continue
-            print(line, flush=True)
+            # print(line, flush=True)
             if "design_area" in line:
                 area = float(line.split(" = ")[-1])
             elif "worst_slack" in line:

@@ -12,6 +12,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Prefix graph to adder netlist conversion tool')
     parser.add_argument('-n','--input_bitwidth', type = int, required=True, help="Input bitwidth for the adder")
     parser.add_argument('--adder_type', type = int, default=0, help="Initial starting state for prefix graph (0: serial, 1: sklansky, 2: brent-kung)")
+    parser.add_argument('--use_analytic_model', action = 'store_true', default = False, help="Use analytic model for delay and area")
     parser.add_argument('-b', '--batch_size', type = int, default = 192, help="Batch size for RL training")
     parser.add_argument('--num_steps', type = int, default = 5000, help="Number of training steps per episode")
     parser.add_argument('--num_episodes', type = int, default = 100, help="Number of training episodes")
@@ -30,6 +31,7 @@ def parse_arguments():
     print(SEPARATOR)
     print_info_formatted("Input bitwidth", str(args.input_bitwidth))
     print_info_formatted("Adder type", "RCA" if args.adder_type == 0 else "Sklansky" if args.adder_type == 1 else "Brent-Kung")
+    print_info_formatted("Use analytic model", str(args.use_analytic_model))
     print_info_formatted("Number of training steps per episode", str(args.num_steps))
     print_info_formatted("Number of training episodes", str(args.num_episodes))
     print_info_formatted("Weight scalar for area and delay", str(args.w_scalar))
@@ -43,6 +45,7 @@ def parse_arguments():
     print(SEPARATOR)
 
     global_vars.initial_adder_type = args.adder_type
+    global_vars.use_analytic_model = args.use_analytic_model
     global_vars.openroad_path = args.openroad_path
     global_vars.flow_type = args.flow_type
     global_vars.output_dir = args.output_dir
