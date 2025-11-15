@@ -29,6 +29,8 @@ def extract_min_scalarized_graph(file_name: str, w_scalar: float, c_delay: float
         reader = csv.DictReader(file)
         for row in reader:
             try:
+                if (row['verilog_file_name'] == 'verilog_file_name') and (row['delay'] == 'delay'):
+                    continue  # Skip header rows within the file
                 verilog_file_name = row['verilog_file_name']
                 delay = float(row['delay'])
                 area = float(row['area'])
