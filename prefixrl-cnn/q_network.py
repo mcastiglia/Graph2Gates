@@ -469,6 +469,7 @@ def train(cfg: TrainingConfig, restore_from=None, device=None) -> Tuple[PrefixRL
         timer.start_step()
         start_step_for_episode = start_step if episode == start_episode else 0
         pbar = tqdm(range(start_step_for_episode, global_vars.num_steps), desc=f"Episode {episode+1}/{global_vars.num_episodes}")
+        consecutive_failures = 0
         for step in pbar:
             current_state_nodelist = torch.from_numpy(np.array([current_states[b].nodelist for b in range(B)]))
             current_state_minlist = torch.from_numpy(np.array([current_states[b].minlist for b in range(B)]))
@@ -514,7 +515,16 @@ def train(cfg: TrainingConfig, restore_from=None, device=None) -> Tuple[PrefixRL
             
             # next_states is a list of B Graph_State objects
             # TODO: this will be the bottleneck of training. Should be performed in parallel instead of sequentially
-            next_states = evaluate_next_state_batch(current_states, action, action_idx[:,0], action_idx[:,1], B)
+            try:
+                next_states = evaluate_next_state_batch(current_states, action, action_idx[:,0], action_idx[:,1], B)
+                consecutive_failures = 0
+            except Exception as e:
+                print(f"Step {step} evaluation failed: {e}")
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    print("3 consecutive step failures, skipping to next episode")
+                    break
+                next_states = current_states  # stay in same state
             next_state_nodelist = torch.from_numpy(np.array([next_states[b].nodelist for b in range(B)]))
             next_state_minlist = torch.from_numpy(np.array([next_states[b].minlist for b in range(B)]))
             next_state_levellist = torch.from_numpy(np.array([next_states[b].levellist for b in range(B)]))
