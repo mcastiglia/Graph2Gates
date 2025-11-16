@@ -299,8 +299,8 @@ def get_best_action(qmaps: torch.Tensor, w_area, w_delay) -> Tuple[Tuple[int, in
 # TODO: epsilon should anneal to zero over time
 def sample_epsilon(episode: int) -> float:
     total_episodes = global_vars.num_episodes
-    progress = int(episode / total_episodes)
-    i = int((1023 * 0.4) * (1 - (progress * 0.9)))   # linearly decrease i from 1023*0.4 to 0.04 over training
+    progress = (episode / total_episodes)
+    i = ((1023 * 0.4) * (1 - (progress * 0.9)))   # linearly decrease i from 1023*0.4 to 0.04 over training
     eps = 0.4 ** (1 + 7 * i / 1023)
     return eps
 
