@@ -181,7 +181,16 @@ class Graph_State(object):
 
         if not global_vars.use_analytic_model:
             next_state.run_yosys()
-            delay, area, power = next_state.run_openroad(batch_idx)
+            for openroad_attempt in range(3):
+                try:
+                    delay, area, power = next_state.run_openroad(batch_idx)
+                    break
+                except FileNotFoundError:
+                    print(f"OpenROAD attempt {openroad_attempt} failed for {next_state.verilog_file_name}", flush=True)
+                    if openroad_attempt < 2:
+                        time.sleep(0.5)
+                    else:
+                        raise
     
             next_state.delay = delay
             next_state.area = area
@@ -485,23 +494,30 @@ class Graph_State(object):
         # print_stat_command = global_vars.PRINT_STAT_COMMAND.format(global_vars.openroad_path)
         # fopen.write(global_vars.yosys_script_format.format(src_file_path, global_vars.YOSYS_OPTIMIZATION_EFFORT, global_vars.openroad_path, print_stat_command, dst_file_name))
         fopen.close()
-        try:
-            output = subprocess.check_output(
-                ["yosys {}".format(yosys_script_file_name)], 
-                shell=True,
-                timeout=300,
-                stderr=subprocess.STDOUT,
-            ).decode("utf-8")
-            # print(output, flush=True)
-            # for output_line in output.split("\n"):
-            #     if "Chip area" in output_line:
-            #         print(output_line, flush=True)
-            #         break
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Yosys timed out after 300 seconds for {yosys_script_file_name}")
-        except subprocess.CalledProcessError as e:
-            print("Yosys error: ", e.output, flush=True)
-            raise RuntimeError(f"Yosys failed for {yosys_script_file_name}")
+        
+        MAX_RETRIES = 5
+        TIMEOUT = 30
+        
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                output = subprocess.check_output(
+                    ["yosys {}".format(yosys_script_file_name)], 
+                    shell=True,
+                    timeout=TIMEOUT,
+                    stderr=subprocess.STDOUT,
+                ).decode("utf-8")
+                break  # Success
+            except subprocess.TimeoutExpired:
+                print(f"Yosys timeout on attempt {attempt} for {yosys_script_file_name}", flush=True)
+                if attempt == MAX_RETRIES:
+                    raise RuntimeError(f"Yosys timed out after {TIMEOUT} seconds for {yosys_script_file_name}")
+                time.sleep(0.5)
+            except subprocess.CalledProcessError as e:
+                print(f"Yosys error on attempt {attempt} for {yosys_script_file_name}: {e.output}", flush=True)
+                if attempt == MAX_RETRIES:
+                    raise RuntimeError(f"Yosys failed for {yosys_script_file_name}")
+                time.sleep(0.5)
+        
         if not global_vars.save_verilog:
             os.remove(src_file_path)
     
@@ -528,7 +544,16 @@ class Graph_State(object):
           "run_yosys_mid",
           self.verilog_file_name.split(".")[0] + "_yosys.v"
       )
-      shutil.copyfile(yosys_file_name, verilog_file_path)
+      for copy_attempt in range(3):
+          try:
+              shutil.copyfile(yosys_file_name, verilog_file_path)
+              break
+          except FileNotFoundError:
+              if copy_attempt < 2:
+                  print(f"[OpenROAD] Yosys file not found, retrying copy attempt {copy_attempt + 1}...")
+                  time.sleep(0.5)
+              else:
+                  print(f"[OpenROAD] FAILED to copy Yosys file after 3 attempts ? skipping graph {file_name_prefix}")
   
       # Write SDC
       sdc_file_path = f"{global_vars.openroad_path}adder_nangate45_{file_name_prefix}.sdc"
@@ -551,9 +576,9 @@ class Graph_State(object):
       tcl_script = f"adder_nangate45_{file_name_prefix}.tcl"
   
       # ------------------------------
-      # NEW LOGIC: 30 sec timeout, retry 3 times
+      # NEW LOGIC: 30 sec timeout, retry 5 times
       # ------------------------------
-      MAX_RETRIES = 3
+      MAX_RETRIES = 5
       TIMEOUT = 30
       output = None
   
@@ -569,34 +594,38 @@ class Graph_State(object):
               # Try extracting results
               area, wslack, power, note = self.extract_results(output)
   
+              # ------------------------------
+              # Extraction succeeded
+              # ------------------------------
+              delay = global_vars.CLOCK_PERIOD_TARGET - wslack
+              self.delay = delay
+              self.area = area
+              self.power = power
+
               # If valid result ? break
               if note is not None:
                   break
   
           except subprocess.TimeoutExpired as e:
               print(f"[OpenROAD] Timeout on attempt {attempt} for {file_name_prefix}")
+              if attempt < MAX_RETRIES:
+                  time.sleep(0.5)
   
           except Exception as e:
               print(f"[OpenROAD] Error on attempt {attempt}: {e}")
+              if attempt < MAX_RETRIES:
+                  time.sleep(0.5)
   
           # If failed extraction, loop continues to retry
   
       else:
           # ------------------------------------------------
-          # All 3 attempts failed ? give up on graph safely
+          # All 5 attempts failed ? give up on graph safely
           # ------------------------------------------------
           print(f"[OpenROAD] FAILED after {MAX_RETRIES} attempts ? skipping graph {file_name_prefix}")
-          self.delay = 1e5
-          self.area = 1e5
-          self.power = 1e5
-  
-      # ------------------------------
-      # Extraction succeeded
-      # ------------------------------
-      delay = global_vars.CLOCK_PERIOD_TARGET - wslack
-      self.delay = delay
-      self.area = area
-      self.power = power
+          delay = self.delay = 1e5
+          area = self.area = 1e5
+          power = self.power = 1e5
   
       # Cache it
       global_vars.result_cache[hash_idx] = {
