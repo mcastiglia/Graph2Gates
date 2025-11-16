@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import networkx as nx
+import imageio.v2 as imageio
 
 def parse_arguments():
     args = argparse.ArgumentParser()
@@ -15,6 +16,8 @@ def parse_arguments():
     args.add_argument('--file_name', type=str, required=True)
     args.add_argument('--input_dir', type=str, required=True)
     args.add_argument('--plot_dir', type=str, required=True)
+    args.add_argument('--steps_per_episode', type=int, default=500)
+    args.add_argument('--num_episodes', type=int, default=20)
     return args.parse_args()
 
 def extract_min_scalarized_graph(file_name: str, w_scalar: float, c_delay: float = 10.0, c_area: float = 1e-3):
@@ -64,6 +67,33 @@ def extract_min_scalarized_graph(file_name: str, w_scalar: float, c_delay: float
     print("Total lines in file: ", total_lines_in_file)
     
     return min_score
+    
+def load_all_data(file_name, w_scalar, c_delay=10.0, c_area=1e-3):
+    w_delay = w_scalar
+    w_area = 1 - w_scalar
+    data = []
+    with open(file_name, 'r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            try:
+                if row['verilog_file_name'] == 'verilog_file_name':
+                    continue
+                delay = float(row['delay'])
+                area = float(row['area'])
+                scalar = w_area * (c_area * area) + w_delay * (c_delay * delay)
+                data.append({
+                    'verilog_file_name': row['verilog_file_name'],
+                    'delay': delay,
+                    'area': area,
+                    'level': int(row['level']),
+                    'size': int(row['size']),
+                    'fanout': int(row['fanout']),
+                    'scalar': scalar
+                })
+            except (KeyError, ValueError) as e:
+                print(f"Warning: Skipping row due to error: {e}")
+                continue
+    return data
     
 def load_feature_array(filepath):
     """Load a tab-separated feature list file into a numpy array, handling trailing tabs and empty lines."""
@@ -125,7 +155,7 @@ def plot_prefix_graph(nodelist, minlist, levellist, verilog_file_name, output_di
         
     n = len(nodelist)
     plot_title = os.path.join(output_dir, "{}.png".format(verilog_file_name))
-    plt.clf()
+    plt.figure(figsize=(10, 10))
     G = nx.DiGraph()
     
     nodes = []
@@ -172,17 +202,60 @@ def plot_prefix_graph(nodelist, minlist, levellist, verilog_file_name, output_di
         arrowsize=100 // n,
     )
     ax = plt.gca()
+    ax.set_xlim(-1, n)
+    ax.set_ylim(-1, n)
     ax.set_aspect("equal", adjustable="box")
     
-    plt.savefig(plot_title, dpi=300, bbox_inches="tight")        
+    plt.savefig(plot_title, dpi=300)        
         
 def main():
     args = parse_arguments()
-    verilog_file_name = "adder_32b_32_495_3912c1bc9062937713639ca26b7c80fb"
-    # min_score = extract_min_scalarized_graph(args.file_name, args.w_scalar, args.c_delay, args.c_area)
-    feature_arrays = extract_feature_lists(args.input_dir, verilog_file_name)
-    # feature_arrays = extract_feature_lists(args.input_dir, min_score['verilog_file_name'])
-    plot_prefix_graph(feature_arrays['nodelist'], feature_arrays['minlist'], feature_arrays['levellist'], verilog_file_name, args.plot_dir)
-        # plot_prefix_graph(feature_arrays['nodelist'], feature_arrays['minlist'], feature_arrays['levellist'], min_score['verilog_file_name'], args.plot_dir)
+    data = load_all_data(args.file_name, args.w_scalar, args.c_delay, args.c_area)
+    steps_per_episode = args.steps_per_episode
+    num_episodes = args.num_episodes
+    total_steps = steps_per_episode * num_episodes
+    if len(data) != total_steps:
+        print(f"Warning: Expected {total_steps} steps, got {len(data)}")
+    # For each episode, create segment GIF
+    for episode in range(num_episodes):
+        episode_data = data[episode * steps_per_episode : (episode + 1) * steps_per_episode]
+        frames = []
+        num_frames = 20
+        segment_size = steps_per_episode // num_frames
+        temp_dir = os.path.join(args.plot_dir, f'episode_{episode}_frames')
+        os.makedirs(temp_dir, exist_ok=True)
+        for frame in range(num_frames):
+            start = frame * segment_size
+            end = start + segment_size
+            segment_data = episode_data[start:end]
+            if not segment_data:
+                continue
+            min_score = min(segment_data, key=lambda x: x['scalar'])
+            feature_arrays = extract_feature_lists(args.input_dir, min_score['verilog_file_name'])
+            if not feature_arrays or 'nodelist' not in feature_arrays or 'minlist' not in feature_arrays or 'levellist' not in feature_arrays:
+                continue
+            frame_name = f'frame_{frame}'
+            plot_prefix_graph(feature_arrays['nodelist'], feature_arrays['minlist'], feature_arrays['levellist'], frame_name, temp_dir)
+            frames.append(os.path.join(temp_dir, f'{frame_name}.png'))
+        # Create GIF
+        images = [imageio.imread(f) for f in frames]
+        gif_path = os.path.join(args.plot_dir, f'episode_{episode}_segment.gif')
+        imageio.mimsave(gif_path, images, duration=0.5)
+    # Now, for the overall GIF
+    overall_frames = []
+    overall_temp_dir = os.path.join(args.plot_dir, 'overall_frames')
+    os.makedirs(overall_temp_dir, exist_ok=True)
+    for episode in range(num_episodes):
+        episode_data = data[episode * steps_per_episode : (episode + 1) * steps_per_episode]
+        min_score = min(episode_data, key=lambda x: x['scalar'])
+        feature_arrays = extract_feature_lists(args.input_dir, min_score['verilog_file_name'])
+        if not feature_arrays or 'nodelist' not in feature_arrays or 'minlist' not in feature_arrays or 'levellist' not in feature_arrays:
+            continue
+        frame_name = f'episode_{episode}'
+        plot_prefix_graph(feature_arrays['nodelist'], feature_arrays['minlist'], feature_arrays['levellist'], frame_name, overall_temp_dir)
+        overall_frames.append(os.path.join(overall_temp_dir, f'{frame_name}.png'))
+    images = [imageio.imread(f) for f in overall_frames]
+    gif_path = os.path.join(args.plot_dir, 'overall_episodes.gif')
+    imageio.mimsave(gif_path, images, duration=0.5)
 if __name__ == "__main__":
     main()
