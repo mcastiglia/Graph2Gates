@@ -1,6 +1,6 @@
-FROM rocm/dev-ubuntu-22.04:6.4.4-complete
+FROM nvidia/cuda:13.0.2-base-ubuntu22.04
 LABEL maintainer="Michael Castiglia <michael.castiglia@ucf.edu>"
-LABEL description="Dockerfile for OpenROAD"
+LABEL description="Dockerfile for OpenROAD (CUDA)"
 
 RUN set -e && \
     export DEBIAN_FRONTEND=noninteractive && \
@@ -52,7 +52,7 @@ RUN set -e && \
     pip install --upgrade pip && \
     pip install pyyaml numpy tqdm scipy gym torch-geometric stable-baselines3
 
-RUN set -e && . /opt/venv/bin/activate && pip install --force-reinstall --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/rocm6.4
+RUN set -e && . /opt/venv/bin/activate && pip install torch
 
 ENV PATH="/usr/local/bin:/opt/oss-cad-suite/bin:/opt/klayout/usr/bin:/opt/venv/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/opt/ortools/lib:/opt/openroad-root/usr/lib/x86_64-linux-gnu:/opt/klayout/usr/lib/klayout:/usr/lib/x86_64-linux-gnu"
