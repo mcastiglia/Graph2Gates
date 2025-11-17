@@ -120,12 +120,12 @@ def update_levellist(nodelist, levellist):
                 
     return levellist
     
-def plot_prefix_graph(nodelist, minlist, levellist, verilog_file_name, output_dir):
+def plot_prefix_graph(nodelist, minlist, levellist, verilog_file_name, output_dir, w_scalar):
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
         
     n = len(nodelist)
-    plot_title = os.path.join(output_dir, "{}.png".format(verilog_file_name))
+    plot_title = os.path.join(output_dir, "{}_w{}.png".format(verilog_file_name, w_scalar))
     plt.clf()
     G = nx.DiGraph()
     
@@ -221,13 +221,13 @@ def plot_scalar_bars(
         ax.annotate(f"{height:.3g}", xy=(bar.get_x() + bar.get_width() / 2, height), xytext=(0, 3), textcoords="offset points", ha="center", va="bottom")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(output_path, "scalar_scores.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(os.path.join(output_path, "scalar_scores_w{}.png".format(w_scalar)), dpi=300, bbox_inches="tight")
     
 def main():
     args = parse_arguments()
     min_score = extract_min_scalarized_graph(args.file_name, args.w_scalar, args.c_delay, args.c_area)
     feature_arrays = extract_feature_lists(args.input_dir, min_score['verilog_file_name'])
-    plot_prefix_graph(feature_arrays['nodelist'], feature_arrays['minlist'], feature_arrays['levellist'], min_score['verilog_file_name'], args.plot_dir)
+    plot_prefix_graph(feature_arrays['nodelist'], feature_arrays['minlist'], feature_arrays['levellist'], min_score['verilog_file_name'], args.plot_dir, args.w_scalar)
     plot_scalar_bars(args.n64, min_score['scalar'], args.w_scalar, args.c_delay, args.c_area, args.plot_dir)
     
 if __name__ == "__main__":
