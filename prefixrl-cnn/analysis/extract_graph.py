@@ -10,8 +10,8 @@ import networkx as nx
 def parse_arguments():
     args = argparse.ArgumentParser()
     args.add_argument('--w_scalar', type=float, required=True)
-    args.add_argument('--c_delay', type=float, default=10.0)
-    args.add_argument('--c_area', type=float, default=1e-3)
+    args.add_argument('--c_delay', type=float, default=1.0)
+    args.add_argument('--c_area', type=float, default=1e-2)
     args.add_argument('--file_name', type=str, required=True)
     args.add_argument('--input_dir', type=str, required=True)
     args.add_argument('--plot_dir', type=str, required=True)
