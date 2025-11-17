@@ -18,6 +18,7 @@ def parse_arguments():
     args.add_argument('--plot_dir', type=str, required=True)
     args.add_argument('--steps_per_episode', type=int, default=500)
     args.add_argument('--num_episodes', type=int, default=20)
+    args.add_argument('--num_frames', type=int, default=20)
     return args.parse_args()
 
 def extract_min_scalarized_graph(file_name: str, w_scalar: float, c_delay: float = 10.0, c_area: float = 1e-3):
@@ -220,7 +221,7 @@ def main():
     for episode in range(num_episodes):
         episode_data = data[episode * steps_per_episode : (episode + 1) * steps_per_episode]
         frames = []
-        num_frames = 20
+        num_frames = args.num_frames
         segment_size = steps_per_episode // num_frames
         temp_dir = os.path.join(args.plot_dir, f'episode_{episode}_frames')
         os.makedirs(temp_dir, exist_ok=True)
