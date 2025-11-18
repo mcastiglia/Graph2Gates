@@ -172,7 +172,7 @@ def plot_prefix_graph(nodelist, minlist, levellist, verilog_file_name, output_di
         G, 
         pos,
         with_labels=False,
-        node_size=1024 // n,
+        node_size=1024 // (2*n),
         edgecolors="black",
         linewidths=1,
         edge_color="gray",
@@ -336,23 +336,25 @@ def animate_pareto_with_graph(n64: bool, min_scores: dict, output_path: str, c_d
     ws_sorted = sorted(min_scores.keys())
     rl_areas_all = [float(min_scores[w]['area']) for w in ws_sorted]
     rl_delays_all = [float(min_scores[w]['delay']) for w in ws_sorted]
-    seen = set()
-    unique_points = []
+    unique_map = {}
     for w in ws_sorted:
         area = float(min_scores[w]['area'])
         delay = float(min_scores[w]['delay'])
         key = (round(area, 6), round(delay, 6))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_points.append({
-            'w': w,
-            'area': area,
-            'delay': delay,
-            'feature_arrays': min_scores[w].get('feature_arrays', {})
-        })
+        fa = min_scores[w].get('feature_arrays', {})
+        if key not in unique_map:
+            unique_map[key] = {
+                'w_list': [w],
+                'area': area,
+                'delay': delay,
+                'feature_arrays': fa
+            }
+        else:
+            unique_map[key]['w_list'].append(w)
+    unique_points = list(unique_map.values())
     rl_unique_areas = [p['area'] for p in unique_points]
     rl_unique_delays = [p['delay'] for p in unique_points]
+    rl_labels = [f"{min(p['w_list']):.2f}" for p in unique_points]
     # Fix subplot axis ranges across frames for consistent dimensions
     x_candidates = rl_unique_areas + [rca_area, sklansky_area, brent_kung_area]
     y_candidates = rl_unique_delays + [rca_delay, sklansky_delay, brent_kung_delay]
@@ -364,7 +366,7 @@ def animate_pareto_with_graph(n64: bool, min_scores: dict, output_path: str, c_d
     y_lim = (y_min - y_pad, y_max + y_pad)
     frame_paths = []
     for idx, p in enumerate(unique_points):
-        w = p['w']
+        w = min(p['w_list'])
         fa = p.get('feature_arrays', {})
         nodelist = fa.get('nodelist')
         minlist = fa.get('minlist')
@@ -389,6 +391,9 @@ def animate_pareto_with_graph(n64: bool, min_scores: dict, output_path: str, c_d
         ax_right.scatter([rl_unique_areas[idx]], [rl_unique_delays[idx]], color="red", s=120, zorder=4, edgecolors="black", linewidths=1.5)
         ax_right.set_xlim(x_lim)
         ax_right.set_ylim(y_lim)
+        # Add labels for all unique RL points (min w per point)
+        for x, y, text in zip(rl_unique_areas, rl_unique_delays, rl_labels):
+            ax_right.annotate(text, (x, y), textcoords="offset points", xytext=(5, 5), ha="left", fontsize=8)
         ax_right.legend()
         ax_right.set_xlabel("Area (um^2)")
         ax_right.set_ylabel("Delay (ns)")
@@ -412,7 +417,7 @@ def animate_pareto_with_graph(n64: bool, min_scores: dict, output_path: str, c_d
     gif_path = os.path.join(output_path, gif_name)
     print("Creating GIF...")
     frames = [imageio.imread(p) for p in frame_paths]
-    imageio.mimsave(gif_path, frames, duration=0.5, loop=0)
+    imageio.mimsave(gif_path, frames, duration=1.0, loop=0)
     
         
         
