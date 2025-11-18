@@ -26,6 +26,7 @@ def parse_arguments():
     args.add_argument('--pareto', action='store_true')
     args.add_argument('--extract_verilog', action='store_true')
     args.add_argument('--w_step', type=float, default=0.1)
+    args.add_argument('--use_analytic_model', action='store_true')
     return args.parse_args()
 
 def extract_min_scalarized_graph(file_name: str, w_scalar: float, c_delay: float = 10.0, c_area: float = 1e-3):
