@@ -6,6 +6,11 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import networkx as nx
+from matplotlib.patches import ConnectionPatch
+try:
+    import imageio.v2 as imageio
+except Exception:
+    import imageio
 
 def parse_arguments():
     args = argparse.ArgumentParser()
@@ -179,6 +184,45 @@ def plot_prefix_graph(nodelist, minlist, levellist, verilog_file_name, output_di
     
     plt.savefig(plot_title, dpi=300, bbox_inches="tight")        
         
+def draw_prefix_graph_on_axes(nodelist, minlist, levellist, ax):
+    n = len(nodelist)
+    G = nx.DiGraph()
+    nodes = []
+    for i in range(n):
+        for j in range(n):
+            if nodelist[i, j] == 1:
+                nodes.append((i, int(levellist[i, j]) - 1))
+    G.add_nodes_from(nodes)
+    edges = []
+    for x in range(n - 1, 0, -1):
+        last_y = x
+        for y in range(x - 1, -1, -1):
+            if nodelist[x, y] == 1:
+                level = int(levellist[x, y]) - 1
+                if nodelist[x, last_y] == 1:
+                    last_y_level = int(levellist[x, last_y]) - 1
+                    edges.append(((x, last_y_level), (x, level)))
+                if nodelist[last_y - 1, y] == 1:
+                    lower_level = int(levellist[last_y - 1, y]) - 1
+                    edges.append(((last_y - 1, lower_level), (x, level)))
+                last_y = y
+    G.add_edges_from(edges)
+    pos = {(r, c): (r, c) for r in range(n) for c in range(n)}
+    nx.draw(
+        G,
+        pos,
+        with_labels=False,
+        node_size=max(64, 1024 // max(1, n)),
+        edgecolors="black",
+        linewidths=1,
+        edge_color="gray",
+        arrows=False,
+        arrowsize=max(8, 100 // max(1, n)),
+        ax=ax,
+    )
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_axis_off()
+        
 def plot_scalar_bars(
     n64: bool,
     min_score: float,
@@ -274,6 +318,102 @@ def plot_scalar_pareto(n64: bool, min_scores: dict, output_path: str = "scalar_s
     ax.grid(axis="y", linestyle="--", alpha=0.3)
     plt.savefig(os.path.join(output_path, "scalar_pareto.png"), dpi=300, bbox_inches="tight")
     
+def animate_pareto_with_graph(n64: bool, min_scores: dict, output_path: str, c_delay: float = 1.0, c_area: float = 1e-2, gif_name: str = "scalar_pareto.gif"):
+    if not n64:
+        rca_delay = 1.932497550015271
+        rca_area = 256.96
+        sklansky_delay = 1.273223118529967
+        sklansky_area = 402.72
+        brent_kung_delay = 1.2637878323771907
+        brent_kung_area = 288.61
+    else:
+        rca_delay = 3.47527738645499
+        rca_area = 486.78
+        sklansky_delay = 1.905973210983792
+        sklansky_area = 852.26
+        brent_kung_delay = 1.7058077655439832
+        brent_kung_area = 543.7
+    ws_sorted = sorted(min_scores.keys())
+    rl_areas_all = [float(min_scores[w]['area']) for w in ws_sorted]
+    rl_delays_all = [float(min_scores[w]['delay']) for w in ws_sorted]
+    seen = set()
+    unique_points = []
+    for w in ws_sorted:
+        area = float(min_scores[w]['area'])
+        delay = float(min_scores[w]['delay'])
+        key = (round(area, 6), round(delay, 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_points.append({
+            'w': w,
+            'area': area,
+            'delay': delay,
+            'feature_arrays': min_scores[w].get('feature_arrays', {})
+        })
+    rl_unique_areas = [p['area'] for p in unique_points]
+    rl_unique_delays = [p['delay'] for p in unique_points]
+    # Fix subplot axis ranges across frames for consistent dimensions
+    x_candidates = rl_unique_areas + [rca_area, sklansky_area, brent_kung_area]
+    y_candidates = rl_unique_delays + [rca_delay, sklansky_delay, brent_kung_delay]
+    x_min, x_max = min(x_candidates), max(x_candidates)
+    y_min, y_max = min(y_candidates), max(y_candidates)
+    x_pad = 0.05 * (x_max - x_min if x_max > x_min else 1.0)
+    y_pad = 0.05 * (y_max - y_min if y_max > y_min else 1.0)
+    x_lim = (x_min - x_pad, x_max + x_pad)
+    y_lim = (y_min - y_pad, y_max + y_pad)
+    frame_paths = []
+    for idx, p in enumerate(unique_points):
+        w = p['w']
+        fa = p.get('feature_arrays', {})
+        nodelist = fa.get('nodelist')
+        minlist = fa.get('minlist')
+        levellist = fa.get('levellist')
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5), gridspec_kw={'width_ratios': [1.8, 2.2]})
+        ax_left, ax_right = axes
+        if nodelist is not None and levellist is not None and minlist is not None:
+            draw_prefix_graph_on_axes(nodelist, minlist, levellist, ax_left)
+            # Fix left subplot limits to keep layout stable
+            n = len(nodelist)
+            ax_left.set_xlim(-1, n)
+            ax_left.set_ylim(-1, n)
+        else:
+            ax_left.text(0.5, 0.5, "Graph unavailable", ha="center", va="center")
+            ax_left.set_axis_off()
+        ax_right.scatter(sklansky_area, sklansky_delay, label="sklansky")
+        ax_right.scatter(brent_kung_area, brent_kung_delay, label="brent_kung")
+        ax_right.scatter(rca_area, rca_delay, label="rca")
+        ax_right.plot(rl_unique_areas, rl_unique_delays, label="RL", marker="o", color="red", alpha=0.3)
+        ax_right.plot(rl_unique_areas[: idx + 1], rl_unique_delays[: idx + 1], marker="o", color="red", label="_nolegend_", alpha=0.8)
+        # Highlight current point
+        ax_right.scatter([rl_unique_areas[idx]], [rl_unique_delays[idx]], color="red", s=120, zorder=4, edgecolors="black", linewidths=1.5)
+        ax_right.set_xlim(x_lim)
+        ax_right.set_ylim(y_lim)
+        ax_right.legend()
+        ax_right.set_xlabel("Area (um^2)")
+        ax_right.set_ylabel("Delay (ns)")
+        ax_right.set_title(f"Pareto Frontier for Baseline and RL-Optimized Adders")
+        ax_right.grid(axis="y", linestyle="--", alpha=0.3)
+        # Arrow from left subplot to current point on right subplot
+        try:
+            conn = ConnectionPatch(
+                xyA=(0.98, 0.8), coordsA=ax_left.transAxes,
+                xyB=(rl_unique_areas[idx], rl_unique_delays[idx]), coordsB=ax_right.transData,
+                arrowstyle="->", mutation_scale=14, color="black", linewidth=1.2
+            )
+            fig.add_artist(conn)
+        except Exception:
+            pass
+        frame_path = os.path.join(output_path, f"pareto_frame_{idx:03d}.png")
+        plt.tight_layout()
+        plt.savefig(frame_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        frame_paths.append(frame_path)
+    gif_path = os.path.join(output_path, gif_name)
+    print("Creating GIF...")
+    frames = [imageio.imread(p) for p in frame_paths]
+    imageio.mimsave(gif_path, frames, duration=0.5, loop=0)
+    
         
         
 def main():
@@ -287,7 +427,9 @@ def main():
         min_scores = {}
         for w in np.arange(0.0, 1.0, args.w_step):
             min_score = extract_min_scalarized_graph(args.file_name, w, args.c_delay, args.c_area)
-            min_scores[w] = min_score
+            feature_arrays = extract_feature_lists(args.input_dir, min_score['verilog_file_name'])
+            min_scores[w] = {'area': min_score['area'], 'delay': min_score['delay'], 'feature_arrays': feature_arrays}
         plot_scalar_pareto(args.n64, min_scores, args.plot_dir, args.c_delay, args.c_area, args.w_step)
+        animate_pareto_with_graph(args.n64, min_scores, args.plot_dir, args.c_delay, args.c_area)
 if __name__ == "__main__":
     main()
